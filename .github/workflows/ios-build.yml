@@ -8,6 +8,7 @@ on:
       - 'sdk/runtime/**'
       - 'sdk/cmake/**'
       - 'ios-memory-probe/**'
+      - 'ios-game-runtime/**'
       - 'src/**'
       - 'CMakeLists.txt'
       - 'IOS_PORTING_STATUS.md'
@@ -80,6 +81,51 @@ jobs:
           echo 'This workflow builds only the standalone unsigned memory diagnostic.' >> "$GITHUB_STEP_SUMMARY"
           echo 'The game target remains Windows/Win32/D3D12; this is not an installable game IPA.' >> "$GITHUB_STEP_SUMMARY"
 
+  ios-game-runtime-compile-check:
+    name: Compile iOS production runtime components
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Apple build tools
+        run: |
+          xcodebuild -version
+          cmake --version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Configure iOS runtime compile-check
+        run: |
+          cmake -S . -B build-ios-runtime -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DMC3_IOS_TARGET=game-runtime-check
+
+      - name: Compile production input and touch-control sources
+        run: cmake --build build-ios-runtime --target MC3IOSRuntimeCompileCheck --config Release
+
+      - name: State scope of compile-check
+        if: always()
+        run: |
+          echo 'This job compiles the existing input subsystem and UIKit touch overlay against iOS SDK.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'It does not build or package MC3 game: Win32 host, D3D12 renderer, and XBE boot remain unported.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Compilation is not device runtime validation.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve compile-check note
+        if: always()
+        run: printf 'iOS runtime components compile-check only; not an MC3 game IPA.\n' > "$RUNNER_TEMP/ios-runtime-readiness.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-runtime-compile-readiness
+          path: ${{ runner.temp }}/ios-runtime-readiness.txt
+          if-no-files-found: error
+          retention-days: 3
+
   ios-game-blocker:
     name: Report game IPA blocker
     runs-on: macos-15
@@ -89,14 +135,13 @@ jobs:
 
       - name: Explain game target limitation
         run: |
-          echo 'The standalone memory probe can be built without game assets or signing.'
-          echo 'The MC3 game target is still Win32/D3D12 and no game IPA is produced.'
-          echo 'The unsigned probe is a diagnostic artifact, not an installable signed app.'
-          echo 'Run the probe on a physical iPhone and inspect device-console PASS/FAIL output.'
+          echo 'The memory probe and iOS runtime compile-check do not produce the game.'
+          echo 'The MC3 game target remains Win32/D3D12 and no game IPA is produced.'
+          echo 'The game needs a UIKit host/lifecycle, Metal backend, portable guest memory and filesystem/thread integration.'
 
       - name: Preserve limitation note
         if: always()
-        run: printf 'Unsigned memory probe only; no MC3 game or installable IPA.\n' > "$RUNNER_TEMP/ios-build-readiness.txt"
+        run: printf 'No MC3 game or installable game IPA is produced.\n' > "$RUNNER_TEMP/ios-build-readiness.txt"
 
       - uses: actions/upload-artifact@v4
         if: always()

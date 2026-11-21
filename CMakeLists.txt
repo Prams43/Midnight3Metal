@@ -9,7 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # A small standalone feasibility app; keep it in its own subdirectory so its
 # UIKit/Objective-C++ entry point never becomes part of the Windows game build.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    add_subdirectory(ios-memory-probe)
+    if(MC3_IOS_TARGET STREQUAL "game-runtime-check")
+        add_subdirectory(ios-game-runtime)
+    else()
+        # The default iOS target remains the standalone diagnostic until the
+        # production host, renderer, and boot path are implemented.
+        add_subdirectory(ios-memory-probe)
+    endif()
     return()
 endif()
 

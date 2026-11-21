@@ -2,41 +2,37 @@
 
 Dokumen ini mencatat hasil audit dan perubahan port yang sudah ada. Ini bukan klaim bahwa aplikasi iOS sudah bisa dibangun atau dimainkan.
 
-## Fondasi yang sudah ditambahkan
+## Fondasi yang tersedia
 
-- `sdk/runtime/core/input.h` dan `input.cpp` menyediakan `VirtualControl`, `SetVirtualControl`, dan `OnScancode` untuk input host non-keyboard. Kontrol virtual diterjemahkan ke laporan pad Xbox pada port 0. Keyboard fallback SDL kini tidak membuat controller sintetis tersambung permanen pada target iOS; kontrol sentuh/virtual tetap dapat menyambungkan laporan saat digunakan.
-- `sdk/runtime/app/ios_touch_controls.h` dan `.mm` menyediakan overlay UIKit awal dengan tombol arah, tombol muka, shoulder, Back, dan Start yang meneruskan press/release ke `SetVirtualControl`. Deklarasi dan implementasi UIKit kini dibatasi ke `TARGET_OS_IPHONE` agar tidak ikut terkompilasi pada target Apple non-iOS. Overlay belum dipanggil host app dan belum masuk build.
-- `sdk/runtime/audio/audio_apple.mm` berisi implementasi awal output stereo float melalui Audio Queue Services untuk Apple. File ini belum dimasukkan ke target CMake dan belum dikompilasi atau diuji.
+- `sdk/runtime/core/input.h` dan `input.cpp` menyediakan `VirtualControl`, `SetVirtualControl`, dan `OnScancode` untuk input host non-keyboard. Kontrol virtual diterjemahkan ke laporan pad Xbox pada port 0.
+- `sdk/runtime/app/ios_touch_controls.h` dan `.mm` menyediakan overlay UIKit dengan tombol arah, tombol muka, shoulder, Back, dan Start yang meneruskan press/release ke `SetVirtualControl`. Overlay belum dihubungkan ke host game.
+- `sdk/runtime/audio/audio_apple.mm` berisi implementasi awal output stereo float melalui Audio Queue Services untuk Apple. Implementasi belum dimasukkan ke target production atau diuji.
+- `ios-memory-probe/` adalah aplikasi diagnostik standalone; bukan game.
 
-Overlay touch ini hanya komponen sumber, bukan app iOS atau jalur input yang sudah berjalan. Game view, lifecycle UIKit dan target Apple belum tersedia.
+## Port production: batas saat ini
 
-## Langkah kerja berikutnya
+Belum tersedia target game iOS, app host UIKit dengan lifecycle game, Metal renderer, bundling aset yang aman, atau IPA game.
 
-1. Jalankan workflow `.github/workflows/ios-build.yml` atau build `MC3MemoryProbe` di macOS dengan Xcode/iOS SDK; workflow menghasilkan bundle diagnostik unsigned, yang perlu ditandatangani untuk pemasangan biasa ke iPhone. Jalankan di iPhone dan rekam hasil reservasi/alignment/alias serta siklus commit/discard/decommit/recommit.
-2. Jika probe lulus, uji memory pressure dan siklus commit/decommit berulang pada beberapa versi iOS dan perangkat; jika gagal, tentukan alternatif guest-address translation sebelum port host.
-3. Setelah memory gate, pisahkan build host platform pada CMake tanpa mengubah jalur Windows yang sudah ada.
-4. Buat app shell UIKit/MetalKit dan jalur lifecycle untuk boot/pause/resume/stop runtime.
-5. Audit portabilitas filesystem, thread/sinkronisasi, exception handling dan networking.
-6. Lepaskan kontrak GPU extension dari tipe D3D12 sebelum mengimplementasikan renderer Metal; jangan memakai stub renderer yang melaporkan sukses tanpa menggambar.
-7. Integrasikan Audio Queue dengan kepemilikan dan shutdown eksplisit serta sesi audio iOS.
-8. Bangun di macOS/Xcode, perbaiki error kompilasi, lalu uji di iPhone sebelum menyebut IPA siap dipasang.
+`CMakeLists.txt` dan `sdk/cmake/XbeRecomp.cmake` saat ini mengatur executable Win32. Runtime memakai entry point `wWinMain`, Win32 window/message loop, ImGui Win32/DX12, D3D12/DXGI, XAudio2, dan pustaka Windows lain. `sdk/runtime/gpu/d3d12.cpp` adalah backend produksi; `gpu/ext.h` masih mengekspos tipe D3D12 langsung. Guest memory juga mengasumsikan layout alamat tetap 4 GiB; probe pada iPhone menunjukkan alamat hint yang diminta tidak dipilih iOS. Audio Apple dan touch overlay belum terintegrasi dengan game host.
 
-Target probe memang terpisah dari game dan tidak berisi aset game. Untuk mengonfigurasi, gunakan root CMake dengan iOS toolchain; lihat `ios-memory-probe/README.md`. Root CMake mengarahkan target iOS ke probe, bukan game.
+## Progress compile-check iOS bertahap
 
-Windows dapat dipakai untuk mengerjakan dan meninjau source. Kompilasi IPA dan validasi device memerlukan runner macOS/Xcode serta perangkat iOS untuk uji akhir.
+Ditambahkan target opsional `ios-game-runtime/` yang dimaksudkan mengompilasi `input.cpp`, `log.cpp`, serta `ios_touch_controls.mm` terhadap iOS SDK dan SDL3 statis. Pemilihannya melalui `-DMC3_IOS_TARGET=game-runtime-check`. Workflow `.github/workflows/ios-build.yml` menambahkan job `ios-game-runtime-compile-check` untuk membangunnya di runner macOS.
 
-## Hambatan utama yang masih terbuka
+Target ini hanya compile-check untuk komponen input/UI. Ia tidak membangun executable atau IPA, tidak menghubungkan overlay ke game, dan tidak memverifikasi perilaku runtime. Perubahan CMake dan workflow belum diverifikasi; hasil GitHub Actions masih diperlukan. Bila build gagal, perbaiki berdasarkan error runner sebelum memperluas daftar source.
 
-Probe memori mandiri tersedia di `sdk/runtime/kernel/ios_memory_probe.mm` dan menjadi app `MC3MemoryProbe`; probe kini mencakup reservasi 4 GiB, dua alias shared, serta satu siklus guest-page commit/discard/decommit/recommit yang mengikuti urutan POSIX di `memory.cpp`. Probe belum dibangun atau dijalankan. Hasilnya merupakan gate awal saja: jika lulus pada satu perangkat, tetap perlu uji beberapa kelas perangkat/iOS dan stress test sebelum menganggap layout aman.
+## Langkah berikutnya
 
-- `sdk/cmake/XbeRecomp.cmake` tetap hanya membuat executable Win32, memakai ImGui Win32/DX12, D3D12/DXGI, XAudio2 dan Windows libraries.
-- `sdk/runtime/app/main.cpp` masih entry point `wWinMain`, mengelola Win32 window/message loop, file discovery, settings, splash, handover, crash dump dan boot.
-- `sdk/runtime/gpu/d3d12.cpp` adalah backend grafis produksi yang sangat besar. `gpu::Backend` adalah seam yang dapat dipakai untuk backend Metal, tetapi banyak extension juga bergantung langsung pada tipe D3D12 di `gpu/ext.h`.
-- Vertex assembly kini memakai `HostFormat` backend-neutral, dan D3D12 memetakannya saat membangun input layout. Ini hanya memisahkan format vertex; cache pipeline, extension API, shader dan renderer tetap D3D12-specific.
-- Kernel/runtime memiliki ketergantungan Win32 untuk alokasi memori guest, thread/sinkronisasi, file/disc dan operasi sistem lainnya. `kernel/memory.cpp` kini memakai file sementara dalam temporary directory sandbox yang langsung di-unlink sebagai backing store pada iOS, bukan Linux-only `memfd_create`; Linux tetap memakai `memfd_create` dan `MAP_NORESERVE`. `kernel/threads.cpp` kini memakai pemanggilan `pthread_setname_np` sesuai signature Darwin, sementara host POSIX lain tetap memakai signature yang ada. Kedua perubahan hanya ditinjau secara statis, belum dikompilasi dengan Apple SDK. Reservasi 4 GB pada alamat tetap dan dua alias pemetaan fisik tetap belum terbukti dapat dipenuhi iOS.
-إن- Audio Apple baru scaffold. Lifecycle start/stop, interupsi, route perubahan perangkat, real-time safety dan error recovery belum dituntaskan.
-- Belum tersedia target game Xcode/iOS, host iOS/Metal, HUD sentuh terintegrasi, bundling aset yang aman, atau IPA. `ios-memory-probe/` kini berisi target aplikasi diagnostik UIKit mandiri yang memanggil `sdk/runtime/kernel/ios_memory_probe.mm`; konfigurasi iOS di root diarahkan ke target ini dan tidak mencoba membangun game. Belum dikonfigurasi atau dijalankan dengan Xcode/perangkat.
+1. Jalankan job `ios-game-runtime-compile-check` dan perbaiki error kompilasi yang benar-benar dilaporkan.
+2. Buat host UIKit/MetalKit dengan lifecycle boot/pause/resume/stop, tanpa mengklaim renderer tersedia sebelum implementasi dan tes.
+3. Rancang ulang guest-memory/address translation agar tidak mensyaratkan alamat tetap yang tidak dipenuhi iOS; uji sebelum menghubungkan runtime penuh.
+4. Pisahkan kontrak ekstensi GPU dari D3D12, lalu implementasikan renderer Metal bertahap dan uji clear/draw/present pada test scene.
+5. Integrasikan Audio Queue dengan start/stop, interupsi, perubahan audio route, dan pemulihan error; uji di perangkat.
+6. Audit filesystem, thread/sinkronisasi, exception handling, dan networking. Bangun di macOS/Xcode setelah setiap lapisan.
+7. Integrasikan hanya konten yang pengguna berhak distribusikan dan lakukan uji end-to-end di iPhone sebelum menyebut IPA game siap.
 
-## Status verifikasi
+## Verifikasi
 
-Input virtual diperiksa statis untuk konsistensi deklarasi/definisi dan posisi tombol laporan yang terdokumentasi di `Pad`; jalur keyboard SDL kini dikondisikan untuk platform non-iOS. Backing store memori iOS diperiksa statis untuk cleanup file-descriptor dan unmap saat kegagalan; tidak dikompilasi atau diuji pada Apple. Pemisahan vertex format diperiksa statis saja; tidak ada build atau uji runtime. Audio Apple tidak diverifikasi dengan toolchain Apple. Aset game dan kode hasil recompile tidak boleh dimasukkan ke repositori publik tanpa hak distribusi yang jelas.
+Input virtual dan pemisahan vertex format telah diperiksa statis pada pekerjaan terdahulu. Backing store memori iOS, perubahan signature thread Darwin, dan audio Apple belum dikompilasi/diuji dengan Apple SDK menurut catatan audit sebelumnya. Workflow yang baru diubah belum dijalankan pada macOS CI. Kompilasi source saja tidak membuktikan runtime bekerja.
+
+Windows masih dapat digunakan untuk meninjau source. Kompilasi iOS memerlukan runner macOS/Xcode; validasi akhir memerlukan perangkat iOS. Aset game dan kode hasil recompile tidak boleh dimasukkan ke repositori publik tanpa hak distribusi yang jelas.
