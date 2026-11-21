@@ -1,0 +1,89 @@
+name: iOS build (macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/runtime/**'
+      - 'sdk/cmake/**'
+      - 'ios-memory-probe/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'IOS_PORTING_STATUS.md'
+      - '.github/workflows/ios-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ios-memory-probe:
+    name: Build unsigned iOS memory probe
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Apple build tools
+        run: |
+          xcodebuild -version
+          cmake --version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Configure iOS probe with Xcode
+        run: |
+          cmake -S . -B build-ios-probe -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+      - name: Build iOS probe
+        run: cmake --build build-ios-probe --target MC3MemoryProbe --config Release
+      - name: Verify built app metadata
+        run: |
+          APP_PATH="$(find build-ios-probe -type d -name MC3MemoryProbe.app -print -quit)"
+          test -n "$APP_PATH"
+          test -x "$APP_PATH/MC3MemoryProbe"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :LSRequiresIPhoneOS' "$APP_PATH/Info.plist"
+          file "$APP_PATH/MC3MemoryProbe"
+          xcrun --sdk iphoneos vtool -show-build "$APP_PATH/MC3MemoryProbe"
+      - name: Package unsigned app bundle
+        run: |
+          APP_PATH="$(find build-ios-probe -type d -name MC3MemoryProbe.app -print -quit)"
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RUNNER_TEMP/MC3MemoryProbe-unsigned.zip"
+      - name: Upload unsigned diagnostic app
+        uses: actions/upload-artifact@v4
+        with:
+          name: MC3MemoryProbe-unsigned
+          path: ${{ runner.temp }}/MC3MemoryProbe-unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Record game build limitation
+        if: always()
+        run: |
+          echo 'This workflow builds only the standalone unsigned memory diagnostic.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The game target remains Windows/Win32/D3D12; this is not an installable game IPA.' >> "$GITHUB_STEP_SUMMARY"
+
+  ios-game-blocker:
+    name: Report game IPA blocker
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Explain game target limitation
+        run: |
+          echo 'The standalone memory probe can be built without game assets or signing.'
+          echo 'The MC3 game target is still Win32/D3D12 and no game IPA is produced.'
+          echo 'The unsigned probe is a diagnostic artifact, not an installable signed app.'
+          echo 'Run the probe on a physical iPhone and inspect device-console PASS/FAIL output.'
+      - name: Preserve limitation note
+        if: always()
+        run: printf 'Unsigned memory probe only; no MC3 game or installable IPA.\n' > "$RUNNER_TEMP/ios-build-readiness.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-build-readiness
+          path: ${{ runner.temp }}/ios-build-readiness.txt
+          if-no-files-found: error
+          retention-days: 3
