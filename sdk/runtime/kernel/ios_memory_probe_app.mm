@@ -11,7 +11,7 @@ extern "C" bool MC3RunIOSMemoryProbe(void);
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
 
-    UILabel* result = [[UILabel alloc] initWithFrame:CGRectZero];
+    UILabel* result = [[UILabel alloc] initWithFrame:(CGRect){0, 0, 0, 0}];
     result.translatesAutoresizingMaskIntoConstraints = NO;
     result.numberOfLines = 0;
     result.textAlignment = NSTextAlignmentCenter;
