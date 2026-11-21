@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
+#include <cstddef>
 
-extern "C" bool MC3RunIOSMemoryProbe(void);
+extern "C" bool MC3RunIOSMemoryProbe(char* failure, size_t failureCapacity);
 
 @interface MC3MemoryProbeViewController : UIViewController
 @end
@@ -16,6 +17,8 @@ extern "C" bool MC3RunIOSMemoryProbe(void);
     result.numberOfLines = 0;
     result.textAlignment = NSTextAlignmentCenter;
     result.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    result.adjustsFontSizeToFitWidth = YES;
+    result.minimumScaleFactor = 0.75;
     result.text = @"Running guest-memory probe…";
     [self.view addSubview:result];
     [NSLayoutConstraint activateConstraints:@[
@@ -25,11 +28,21 @@ extern "C" bool MC3RunIOSMemoryProbe(void);
     ]];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        const BOOL passed = MC3RunIOSMemoryProbe();
+        char failure[256] = {0};
+        const BOOL passed = MC3RunIOSMemoryProbe(failure, sizeof(failure));
+        NSString* failureText = passed
+            ? nil
+            : (failure[0] != '\0'
+                ? [NSString stringWithUTF8String:failure]
+                : @"Unknown failure (no diagnostic was returned)");
         dispatch_async(dispatch_get_main_queue(), ^{
-            result.text = passed ? @"Guest-memory probe passed\n4 GiB reservation and shared aliases work on this run."
-                                 : @"Guest-memory probe failed\nSee the Xcode device console for the failing step.";
-            result.textColor = passed ? UIColor.systemGreenColor : UIColor.systemRedColor;
+            if (passed) {
+                result.text = @"Guest-memory probe passed\n4 GiB reservation, shared aliases, and page cycle passed on this run.";
+                result.textColor = UIColor.systemGreenColor;
+            } else {
+                result.text = [NSString stringWithFormat:@"Guest-memory probe failed\n%@", failureText];
+                result.textColor = UIColor.systemRedColor;
+            }
         });
     });
 }
@@ -58,4 +71,3 @@ int main(int argc, char* argv[]) {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(MC3MemoryProbeAppDelegate.class));
     }
 }
-
