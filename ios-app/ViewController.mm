@@ -15,23 +15,23 @@
     self.view.backgroundColor = [UIColor blackColor];
 
     // Initialize logging subsystem
-    log::Init();
-    log::Info("MC3 iOS Host", "UIKit app host started");
+    logx::Init("/tmp", "mc3ios");
+    LOGI("MC3 iOS Host: UIKit app host started");
 
     // Create and add touch controls overlay
     self.touchControlsOverlay = app::CreateTouchControlsOverlay(self.view.bounds);
     if (self.touchControlsOverlay) {
         [self.view addSubview:self.touchControlsOverlay];
-        log::Info("MC3 iOS Host", "Touch controls overlay initialized");
+        LOGI("MC3 iOS Host: Touch controls overlay initialized");
     } else {
-        log::Error("MC3 iOS Host", "Failed to create touch controls overlay");
+        LOGE("MC3 iOS Host: Failed to create touch controls overlay");
     }
 
     // Set up game loop using CADisplayLink (synced to display refresh rate)
     self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(gameLoopTick:)];
     [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 
-    log::Info("MC3 iOS Host", "Display link game loop started");
+    LOGI("MC3 iOS Host: Display link game loop started");
 }
 
 - (void)gameLoopTick:(CADisplayLink*)displayLink {
@@ -41,7 +41,7 @@
     tickCount++;
 
     if (tickCount == 60) { // Log once per second at 60fps
-        log::Debug("MC3 iOS Host", "Game loop active (60 ticks)");
+        LOGD("MC3 iOS Host: Game loop active (60 ticks)");
         tickCount = 0;
     }
 
