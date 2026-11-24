@@ -19,7 +19,7 @@
     log::Info("MC3 iOS Host", "UIKit app host started");
 
     // Create and add touch controls overlay
-    self.touchControlsOverlay = CreateTouchControlsOverlay(self.view.bounds);
+    self.touchControlsOverlay = app::CreateTouchControlsOverlay(self.view.bounds);
     if (self.touchControlsOverlay) {
         [self.view addSubview:self.touchControlsOverlay];
         log::Info("MC3 iOS Host", "Touch controls overlay initialized");
@@ -60,6 +60,7 @@
 - (void)dealloc {
     [self.displayLink invalidate];
     self.displayLink = nil;
+    [super dealloc];
 }
 
 - (BOOL)prefersStatusBarHidden {
