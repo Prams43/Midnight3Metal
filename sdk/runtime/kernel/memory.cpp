@@ -109,14 +109,12 @@ bool Init() {
 #else
     void* p = MAP_FAILED;
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS: request hint but accept any base address the OS provides.
+    // Guest addresses remain 32-bit (0x80000000, etc); translation adds g_base dynamically.
     constexpr int kReserveFlags = MAP_PRIVATE | MAP_ANONYMOUS;
     void* const requested_base = reinterpret_cast<void*>(0x100000000ull);
     p = mmap(requested_base, size, PROT_NONE, kReserveFlags, -1, 0);
-    // iOS cannot treat this as a hint: the guest address layout is fixed.
-    if (p != MAP_FAILED && p != requested_base) {
-        munmap(p, size);
-        p = MAP_FAILED;
-    }
+    // Accept whatever address iOS gives (probe showed 0x7000000000 instead of requested)
 #else
     constexpr int kReserveFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
     p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, kReserveFlags, -1, 0);

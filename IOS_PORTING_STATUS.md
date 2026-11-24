@@ -33,6 +33,15 @@ Target `ios-app/` membangun executable iOS dengan:
 
 Pemilihannya melalui `-DMC3_IOS_TARGET=ios-app`. Job workflow `ios-app-host` berhasil membangun dan package unsigned IPA (249 KB). Build verified di GitHub Actions macos-15 runner. App ini adalah foundation untuk integrasi renderer dan game logic, bukan game yang playable. Belum ditest di perangkat fisik atau simulator.
 
+### Guest memory portable allocation (Selesai - Ready for CI)
+Fixed hardcoded base address rejection di `sdk/runtime/kernel/memory.cpp`:
+- **Problem:** Code rejected mmap result bila iOS tidak return exact `0x100000000` (iOS gave `0x7000000000`)
+- **Fix:** Accept any base address iOS provides, remove strict equality check
+- **Impact:** Guest addresses stay 32-bit (0x80000000 etc), translation layer adds dynamic `g_base`
+- **Verified:** No hardcoded host pointer arithmetic, all VA→host goes through `Base()`
+
+Detail lengkap di `GUEST_MEMORY_FIX.md`. Ready untuk CI test dengan game runtime.
+
 ### Metal renderer basic (Selesai - Ready for CI)
 Implementasi `MetalRenderer` class untuk clear-screen dengan animasi warna:
 - `MetalRenderer.h` dan `MetalRenderer.mm` - C++ wrapper untuk Metal API
