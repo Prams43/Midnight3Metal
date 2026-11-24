@@ -1,15 +1,26 @@
 #import "ViewController.h"
 #import "MetalRenderer.h"
 #import "app/ios_touch_controls.h"
+#import "MC3DebugOverlay.h"
 #include "core/input.h"
 #include "core/log.h"
 #import <QuartzCore/CAMetalLayer.h>
+
+// Bridge: redirect logx::Write output to the on-screen debug overlay.
+// Called from a C-linkage shim installed at app startup.
+static void OverlayLogLine(const char* line) {
+    NSString* s = [NSString stringWithUTF8String:line ?: ""];
+    // Trim trailing newline for display
+    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    if (s.length > 0) [MC3DebugOverlay log:s];
+}
 
 @interface ViewController ()
 @property (strong, nonatomic) UIView* touchControlsOverlay;
 @property (strong, nonatomic) CADisplayLink* displayLink;
 @property (nonatomic) MetalRenderer* renderer;
 @property (nonatomic) double startTime;
+@property (strong, nonatomic) MC3DebugOverlay* debugOverlay;
 @end
 
 @implementation ViewController
@@ -81,11 +92,19 @@
         LOGE("MC3 iOS Host: Failed to create touch controls overlay");
     }
 
+    // Add debug overlay on top of everything (Windows devs: no Mac/Xcode needed)
+    self.debugOverlay = [MC3DebugOverlay sharedOverlay];
+    self.debugOverlay.frame = self.view.bounds;
+    self.debugOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:self.debugOverlay];
+    [MC3DebugOverlay log:@"[MC3] Debug overlay ready. Tap top-left to hide."];
+
     // Set up game loop using CADisplayLink (synced to display refresh rate)
     self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(gameLoopTick:)];
     [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 
     LOGI("MC3 iOS Host: Display link game loop started");
+    [MC3DebugOverlay log:@"[MC3] App started. Metal + Input + Loop ready."];
 }
 
 - (void)gameLoopTick:(CADisplayLink*)displayLink {
@@ -105,14 +124,18 @@
         // Poll port 0 to verify touch overlay → input routing
         input::Pad pad = input::Poll(0);
         if (pad.connected) {
-            LOGI("input: Poll(0) connected — buttons=0x%04X A=%u B=%u X=%u Y=%u L=%u R=%u lx=%d ly=%d",
-                 pad.buttons,
-                 pad.analog[0], pad.analog[1], pad.analog[2], pad.analog[3],
-                 pad.analog[4], pad.analog[5],
-                 (int)pad.lx, (int)pad.ly);
-        } else {
-            LOGD("input: Poll(0) no active input");
+            NSString* padStr = [NSString stringWithFormat:
+                @"[PAD] btn=%04X A=%d B=%d X=%d Y=%d L=%d R=%d lx=%d ly=%d",
+                pad.buttons,
+                pad.analog[0], pad.analog[1], pad.analog[2], pad.analog[3],
+                pad.analog[4], pad.analog[5],
+                (int)pad.lx, (int)pad.ly];
+            [MC3DebugOverlay log:padStr];
+            LOGI("%s", [padStr UTF8String]);
         }
+
+        // Show uptime on overlay every second
+        [MC3DebugOverlay log:[NSString stringWithFormat:@"[LOOP] t=%.1fs", currentTime]];
 
         tickCount = 0;
     }

@@ -21,6 +21,7 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/ViewController.mm"
     "${CMAKE_CURRENT_LIST_DIR}/MetalRenderer.mm"
     "${CMAKE_CURRENT_LIST_DIR}/app_stub.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/MC3DebugOverlay.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/log.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/app/ios_touch_controls.mm"
@@ -29,6 +30,7 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
 # Include directories for runtime headers
 target_include_directories(MC3iOSApp PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime"
+    "${CMAKE_CURRENT_LIST_DIR}"  # so ios_touch_controls.mm can find MC3DebugOverlay.h
 )
 
 # Enable ARC for Objective-C++ sources
