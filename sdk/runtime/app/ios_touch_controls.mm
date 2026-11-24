@@ -8,7 +8,6 @@
 
 #include "app/ios_touch_controls.h"
 #include "core/input.h"
-#import "MC3DebugOverlay.h"
 
 namespace {
 
@@ -106,9 +105,6 @@ constexpr std::array<ControlSpec, 12> kControls{{
     if (index < 0 || static_cast<size_t>(index) >= kControls.size()) return;
     input::SetVirtualControl(kControls[static_cast<size_t>(index)].control, true);
     sender.alpha = 0.82;
-    // Show on debug overlay — visible directly on iPhone without Mac
-    NSString* name = [NSString stringWithUTF8String:kControls[static_cast<size_t>(index)].title];
-    [MC3DebugOverlay log:[NSString stringWithFormat:@"[BTN] %@ DOWN", name]];
 }
 
 - (void)controlUp:(UIButton*)sender {
@@ -116,8 +112,6 @@ constexpr std::array<ControlSpec, 12> kControls{{
     if (index < 0 || static_cast<size_t>(index) >= kControls.size()) return;
     input::SetVirtualControl(kControls[static_cast<size_t>(index)].control, false);
     sender.alpha = 1.0;
-    NSString* name = [NSString stringWithUTF8String:kControls[static_cast<size_t>(index)].title];
-    [MC3DebugOverlay log:[NSString stringWithFormat:@"[BTN] %@ UP", name]];
 }
 
 - (void)releaseAllControls {
