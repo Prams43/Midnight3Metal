@@ -33,15 +33,16 @@ Target `ios-app/` membangun executable iOS dengan:
 
 Pemilihannya melalui `-DMC3_IOS_TARGET=ios-app`. Job workflow `ios-app-host` berhasil membangun dan package unsigned IPA (249 KB). Build verified di GitHub Actions macos-15 runner. App ini adalah foundation untuk integrasi renderer dan game logic, bukan game yang playable. Belum ditest di perangkat fisik atau simulator.
 
-### Metal renderer basic (In Progress - Belum Build CI)
+### Metal renderer basic (Selesai - Ready for CI)
 Implementasi `MetalRenderer` class untuk clear-screen dengan animasi warna:
 - `MetalRenderer.h` dan `MetalRenderer.mm` - C++ wrapper untuk Metal API
 - Init membuat `MTLDevice` (GPU) dan command queue
 - Draw render animated clear color cycling RGB spectrum (5s period)
-- Terintegrasi ke `ViewController`: view backing layer jadi `CAMetalLayer`, render loop panggil `renderer->Draw()`
+- Terintegrasi ke `ViewController`: CAMetalLayer sebagai sublayer, render loop panggil `renderer->Draw()`
 - Metal framework linked di CMakeLists.txt
+- viewDidLayoutSubviews update drawable size saat rotation/resize
 
-Belum di-push ke GitHub atau diverifikasi di CI. Setelah build sukses, app akan menampilkan layar solid dengan warna animasi sebagai proof Metal pipeline berfungsi.
+Ready untuk push dan CI verification. Setelah build sukses, app akan menampilkan layar animasi warna sebagai proof Metal pipeline berfungsi.
 
 ## Langkah berikutnya
 

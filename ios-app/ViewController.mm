@@ -17,6 +17,22 @@
     return [CAMetalLayer class];
 }
 
+- (void)loadView {
+    // Create view with explicit CAMetalLayer backing
+    // +layerClass only works for UIView subclasses, not runtime instances
+    UIView* metalView = [[UIView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+
+    // Replace default CALayer with CAMetalLayer
+    CAMetalLayer* metalLayer = [CAMetalLayer layer];
+    metalLayer.frame = metalView.bounds;
+    metalLayer.contentsScale = [UIScreen mainScreen].scale;
+
+    // Remove default layer and set metal layer as backing
+    [metalView.layer addSublayer:metalLayer];
+
+    self.view = metalView;
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
 
@@ -27,8 +43,20 @@
     logx::Init("/tmp", "mc3ios");
     LOGI("MC3 iOS Host: UIKit app host started");
 
-    // Initialize Metal renderer
-    CAMetalLayer* metalLayer = (CAMetalLayer*)self.view.layer;
+    // Initialize Metal renderer - get metal layer from sublayers
+    CAMetalLayer* metalLayer = nil;
+    for (CALayer* layer in self.view.layer.sublayers) {
+        if ([layer isKindOfClass:[CAMetalLayer class]]) {
+            metalLayer = (CAMetalLayer*)layer;
+            break;
+        }
+    }
+
+    if (!metalLayer) {
+        LOGE("MC3 iOS Host: CAMetalLayer not found in view");
+        return;
+    }
+
     self.renderer = new MetalRenderer();
 
     if (!self.renderer->Init(metalLayer)) {
@@ -77,12 +105,22 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
 
-    // Update Metal layer drawable size
-    CAMetalLayer* metalLayer = (CAMetalLayer*)self.view.layer;
-    CGSize drawableSize = self.view.bounds.size;
-    drawableSize.width *= self.view.contentScaleFactor;
-    drawableSize.height *= self.view.contentScaleFactor;
-    metalLayer.drawableSize = drawableSize;
+    // Find and update Metal layer drawable size
+    CAMetalLayer* metalLayer = nil;
+    for (CALayer* layer in self.view.layer.sublayers) {
+        if ([layer isKindOfClass:[CAMetalLayer class]]) {
+            metalLayer = (CAMetalLayer*)layer;
+            break;
+        }
+    }
+
+    if (metalLayer) {
+        metalLayer.frame = self.view.bounds;
+        CGSize drawableSize = self.view.bounds.size;
+        drawableSize.width *= self.view.contentScaleFactor;
+        drawableSize.height *= self.view.contentScaleFactor;
+        metalLayer.drawableSize = drawableSize;
+    }
 
     // Update touch overlay frame when view bounds change (e.g., rotation)
     if (self.touchControlsOverlay) {
