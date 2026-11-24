@@ -11,6 +11,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     if(MC3_IOS_TARGET STREQUAL "game-runtime-check")
         add_subdirectory(ios-game-runtime)
+    elseif(MC3_IOS_TARGET STREQUAL "ios-app")
+        add_subdirectory(ios-app)
     else()
         # The default iOS target remains the standalone diagnostic until the
         # production host, renderer, and boot path are implemented.

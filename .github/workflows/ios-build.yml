@@ -9,6 +9,7 @@ on:
       - 'sdk/cmake/**'
       - 'ios-memory-probe/**'
       - 'ios-game-runtime/**'
+      - 'ios-app/**'
       - 'src/**'
       - 'CMakeLists.txt'
       - 'IOS_PORTING_STATUS.md'
@@ -126,27 +127,66 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  ios-game-blocker:
-    name: Report game IPA blocker
+  ios-app-host:
+    name: Build iOS app host with touch overlay
     runs-on: macos-15
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Explain game target limitation
+      - name: Check Apple build tools
         run: |
-          echo 'The memory probe and iOS runtime compile-check do not produce the game.'
-          echo 'The MC3 game target remains Win32/D3D12 and no game IPA is produced.'
-          echo 'The game needs a UIKit host/lifecycle, Metal backend, portable guest memory and filesystem/thread integration.'
+          xcodebuild -version
+          cmake --version
+          xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Preserve limitation note
-        if: always()
-        run: printf 'No MC3 game or installable game IPA is produced.\n' > "$RUNNER_TEMP/ios-build-readiness.txt"
+      - name: Configure iOS app target
+        run: |
+          cmake -S . -B build-ios-app -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DMC3_IOS_TARGET=ios-app
 
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Build iOS app executable
+        run: cmake --build build-ios-app --target MC3iOSApp --config Release
+
+      - name: Verify built app structure
+        run: |
+          APP_PATH="$(find build-ios-app -type d -name MC3iOSApp.app -print -quit)"
+          test -n "$APP_PATH"
+          test -x "$APP_PATH/MC3iOSApp"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APP_PATH/Info.plist"
+          file "$APP_PATH/MC3iOSApp"
+          xcrun --sdk iphoneos vtool -show-build "$APP_PATH/MC3iOSApp"
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$(find build-ios-app -type d -name MC3iOSApp.app -print -quit)"
+          test -n "$APP_PATH"
+
+          IPA_ROOT="$RUNNER_TEMP/ipa-root"
+          mkdir -p "$IPA_ROOT/Payload"
+          ditto "$APP_PATH" "$IPA_ROOT/Payload/MC3iOSApp.app"
+
+          cd "$IPA_ROOT"
+          /usr/bin/zip -qry "$RUNNER_TEMP/MC3iOSApp-unsigned.ipa" Payload
+          /usr/bin/unzip -l "$RUNNER_TEMP/MC3iOSApp-unsigned.ipa" | head -30
+          test -s "$RUNNER_TEMP/MC3iOSApp-unsigned.ipa"
+
+      - name: Upload unsigned iOS app IPA
+        uses: actions/upload-artifact@v4
         with:
-          name: ios-build-readiness
-          path: ${{ runner.temp }}/ios-build-readiness.txt
+          name: MC3iOSApp-unsigned-IPA
+          path: ${{ runner.temp }}/MC3iOSApp-unsigned.ipa
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
+
+      - name: State app scope and limitations
+        if: always()
+        run: |
+          echo 'This app is a UIKit host with touch overlay and placeholder game loop.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'It does NOT run the actual MC3 game: renderer (Metal), guest memory, audio, and game logic are not integrated.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is an iOS app foundation for future porting work, not a playable game.' >> "$GITHUB_STEP_SUMMARY"

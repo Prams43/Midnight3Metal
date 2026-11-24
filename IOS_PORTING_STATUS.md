@@ -5,31 +5,44 @@ Dokumen ini mencatat hasil audit dan perubahan port yang sudah ada. Ini bukan kl
 ## Fondasi yang tersedia
 
 - `sdk/runtime/core/input.h` dan `input.cpp` menyediakan `VirtualControl`, `SetVirtualControl`, dan `OnScancode` untuk input host non-keyboard. Kontrol virtual diterjemahkan ke laporan pad Xbox pada port 0.
-- `sdk/runtime/app/ios_touch_controls.h` dan `.mm` menyediakan overlay UIKit dengan tombol arah, tombol muka, shoulder, Back, dan Start yang meneruskan press/release ke `SetVirtualControl`. Overlay belum dihubungkan ke host game.
+- `sdk/runtime/app/ios_touch_controls.h` dan `.mm` menyediakan overlay UIKit dengan tombol arah, tombol muka, shoulder, Back, dan Start yang meneruskan press/release ke `SetVirtualControl`.
+- `ios-app/` menyediakan UIKit app host dengan `AppDelegate`, `ViewController`, dan lifecycle app iOS. App menampilkan touch overlay dan menjalankan placeholder game loop menggunakan `CADisplayLink`. Ini adalah executable iOS pertama yang dapat di-deploy ke perangkat, tetapi belum menjalankan game sebenarnya.
 - `sdk/runtime/audio/audio_apple.mm` berisi implementasi awal output stereo float melalui Audio Queue Services untuk Apple. Implementasi belum dimasukkan ke target production atau diuji.
 - `ios-memory-probe/` adalah aplikasi diagnostik standalone; bukan game.
 
 ## Port production: batas saat ini
 
-Belum tersedia target game iOS, app host UIKit dengan lifecycle game, Metal renderer, bundling aset yang aman, atau IPA game.
+Tersedia iOS app host dengan UIKit lifecycle dan touch overlay terintegrasi (`ios-app/`), tetapi belum tersedia Metal renderer, integrasi game logic/engine, guest memory portabel, atau game IPA yang playable.
 
-`CMakeLists.txt` dan `sdk/cmake/XbeRecomp.cmake` saat ini mengatur executable Win32. Runtime memakai entry point `wWinMain`, Win32 window/message loop, ImGui Win32/DX12, D3D12/DXGI, XAudio2, dan pustaka Windows lain. `sdk/runtime/gpu/d3d12.cpp` adalah backend produksi; `gpu/ext.h` masih mengekspos tipe D3D12 langsung. Guest memory juga mengasumsikan layout alamat tetap 4 GiB; probe pada iPhone menunjukkan alamat hint yang diminta tidak dipilih iOS. Audio Apple dan touch overlay belum terintegrasi dengan game host.
+`CMakeLists.txt` dan `sdk/cmake/XbeRecomp.cmake` saat ini mengatur executable Win32. Runtime memakai entry point `wWinMain`, Win32 window/message loop, ImGui Win32/DX12, D3D12/DXGI, XAudio2, dan pustaka Windows lain. `sdk/runtime/gpu/d3d12.cpp` adalah backend produksi; `gpu/ext.h` masih mengekspos tipe D3D12 langsung. Guest memory juga mengasumsikan layout alamat tetap 4 GiB; probe pada iPhone menunjukkan alamat hint yang diminta tidak dipilih iOS. Audio Apple belum terintegrasi.
 
-## Progress compile-check iOS bertahap
+## Progress bertahap iOS
 
-Ditambahkan target opsional `ios-game-runtime/` yang dimaksudkan mengompilasi `input.cpp`, `log.cpp`, serta `ios_touch_controls.mm` terhadap iOS SDK dan SDL3 statis. Pemilihannya melalui `-DMC3_IOS_TARGET=game-runtime-check`. Workflow `.github/workflows/ios-build.yml` menambahkan job `ios-game-runtime-compile-check` untuk membangunnya di runner macOS.
+### Compile-check runtime (Selesai)
+Target opsional `ios-game-runtime/` mengompilasi `input.cpp`, `log.cpp`, serta `ios_touch_controls.mm` terhadap iOS SDK dan SDL3 statis. Pemilihannya melalui `-DMC3_IOS_TARGET=game-runtime-check`. Job `ios-game-runtime-compile-check` pada workflow GitHub Actions berhasil memverifikasi komponen runtime dasar compatible dengan iOS SDK.
 
-Target ini hanya compile-check untuk komponen input/UI. Ia tidak membangun executable atau IPA, tidak menghubungkan overlay ke game, dan tidak memverifikasi perilaku runtime. Perubahan CMake dan workflow belum diverifikasi; hasil GitHub Actions masih diperlukan. Bila build gagal, perbaiki berdasarkan error runner sebelum memperluas daftar source.
+### UIKit app host (Baru)
+Target `ios-app/` membangun executable iOS dengan:
+- Entry point `UIApplicationMain` menggantikan `wWinMain`
+- `AppDelegate` dan `ViewController` untuk lifecycle iOS
+- Touch overlay terintegrasi dari `ios_touch_controls.mm`
+- Placeholder game loop menggunakan `CADisplayLink` (60fps display sync)
+- `Info.plist` dengan landscape-only orientation dan status bar hidden
+- SDL3 static library linked
+
+Pemilihannya melalui `-DMC3_IOS_TARGET=ios-app`. Job workflow `ios-app-host` membangun dan package unsigned IPA. App ini adalah foundation untuk integrasi renderer dan game logic, bukan game yang playable. Belum diverifikasi di GitHub Actions atau perangkat.
 
 ## Langkah berikutnya
 
-1. Jalankan job `ios-game-runtime-compile-check` dan perbaiki error kompilasi yang benar-benar dilaporkan.
-2. Buat host UIKit/MetalKit dengan lifecycle boot/pause/resume/stop, tanpa mengklaim renderer tersedia sebelum implementasi dan tes.
-3. Rancang ulang guest-memory/address translation agar tidak mensyaratkan alamat tetap yang tidak dipenuhi iOS; uji sebelum menghubungkan runtime penuh.
-4. Pisahkan kontrak ekstensi GPU dari D3D12, lalu implementasikan renderer Metal bertahap dan uji clear/draw/present pada test scene.
-5. Integrasikan Audio Queue dengan start/stop, interupsi, perubahan audio route, dan pemulihan error; uji di perangkat.
-6. Audit filesystem, thread/sinkronisasi, exception handling, dan networking. Bangun di macOS/Xcode setelah setiap lapisan.
-7. Integrasikan hanya konten yang pengguna berhak distribusikan dan lakukan uji end-to-end di iPhone sebelum menyebut IPA game siap.
+1. **Verifikasi iOS app host di CI**: Jalankan job `ios-app-host` pada GitHub Actions dan perbaiki error build yang dilaporkan.
+2. **Test di perangkat/simulator**: Deploy unsigned IPA ke iPhone atau iOS Simulator untuk memverifikasi app launch, touch overlay responsiveness, dan game loop berjalan.
+3. **Rancang ulang guest memory**: Implementasikan memory layout portabel yang tidak bergantung pada fixed address `0x100000000` (iOS memilih `0x7000000000`). Uji allocation/translation sebelum integrasi penuh.
+4. **Abstraksi GPU renderer**: Pisahkan `gpu/ext.h` dari tipe D3D12 spesifik. Buat interface abstrak untuk backend Metal.
+5. **Implementasi Metal renderer bertahap**: Clear screen, draw test geometry, present. Uji setiap tahap sebelum menghubungkan game rendering penuh.
+6. **Integrasikan game engine**: Hubungkan game initialization, main loop, dan shutdown dengan app lifecycle iOS (launch/resign active/terminate).
+7. **Audio integration**: Hubungkan `audio_apple.mm` dengan game audio system; handle interruptions dan route changes.
+8. **Platform services**: Filesystem access, threading/synchronization primitives iOS, exception handling Darwin-compatible.
+9. **Device testing end-to-end**: Deploy ke perangkat fisik dengan konten yang sah distribusinya dan verifikasi gameplay.
 
 ## Verifikasi
 
