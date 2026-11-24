@@ -33,9 +33,13 @@ target_include_directories(MC3iOSApp PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"  # so ios_touch_controls.mm can find MC3DebugOverlay.h
 )
 
-# Enable ARC for Objective-C++ sources
+# Enable ARC for Objective-C++ sources (OBJCXX_ARC_ENABLED is not a valid CMake property;
+# Xcode requires XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC and Clang uses -fobjc-arc).
+target_compile_options(MC3iOSApp PRIVATE
+    $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
+)
 set_target_properties(MC3iOSApp PROPERTIES
-    OBJCXX_ARC_ENABLED YES
+    XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/Info.plist"
     MACOSX_BUNDLE_BUNDLE_NAME "MC3 Remix"
     MACOSX_BUNDLE_BUNDLE_VERSION "1"

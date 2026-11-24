@@ -57,9 +57,10 @@ void RemovePad(SDL_JoystickID id) {
 
 // once a millisecond at most, however many ports and threads read
 void UpdatePads() {
+    if (!g_sdl) return;
     static uint64_t last = 0;
     uint64_t now = SDL_GetTicks();
-    if (!g_sdl || now == last) return;
+    if (now == last) return;
     last = now;
     SDL_PumpEvents();
     SDL_Event e;

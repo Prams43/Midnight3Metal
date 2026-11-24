@@ -46,8 +46,9 @@ static const CGFloat kFontSize = 10.5f;
     _queue = dispatch_queue_create("mc3.debugoverlay", DISPATCH_QUEUE_SERIAL);
     _panelVisible = YES;
 
-    // Semi-transparent background panel
+    // Semi-transparent background panel (non-interactive so touches pass through to controls)
     UIView* panel = [[UIView alloc] initWithFrame:CGRectMake(4, 4, kPanelWidth, kPanelHeight)];
+    panel.userInteractionEnabled = NO;
     panel.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.72];
     panel.layer.cornerRadius = 6;
     panel.layer.borderWidth = 1;

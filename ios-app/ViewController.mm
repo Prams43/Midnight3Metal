@@ -51,8 +51,9 @@ static void OverlayLogLine(const char* line) {
     self.view.backgroundColor = [UIColor blackColor];
     self.startTime = CACurrentMediaTime();
 
-    // Initialize logging subsystem
-    logx::Init("/tmp", "mc3ios");
+    // Initialize logging subsystem inside the app sandbox's tmp directory
+    NSString* tmpDir = NSTemporaryDirectory();
+    logx::Init(tmpDir ? [tmpDir UTF8String] : "/tmp", "mc3ios");
     LOGI("MC3 iOS Host: UIKit app host started");
 
     // Initialize input subsystem (SDL gamepad + virtual controls)
@@ -178,7 +179,9 @@ static void OverlayLogLine(const char* line) {
         self.renderer = nullptr;
     }
 
+#if !__has_feature(objc_arc)
     [super dealloc];
+#endif
 }
 
 - (BOOL)prefersStatusBarHidden {

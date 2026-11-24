@@ -134,7 +134,9 @@ constexpr std::array<ControlSpec, 12> kControls{{
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self releaseAllControls];
+#if !__has_feature(objc_arc)
     [super dealloc];
+#endif
 }
 
 @end
