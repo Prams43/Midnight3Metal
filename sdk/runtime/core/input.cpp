@@ -210,6 +210,20 @@ void SetVirtualControl(VirtualControl control, bool down) {
     const size_t index = static_cast<size_t>(control);
     if (index < static_cast<size_t>(VirtualControl::Count))
         g_virtual_controls[index].store(down, std::memory_order_relaxed);
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS input verification: log every button event to confirm touch overlay routing.
+    // Remove or disable once input routing is verified end-to-end.
+    static const char* kControlNames[] = {
+        "DpadUp", "DpadDown", "DpadLeft", "DpadRight",
+        "Confirm", "MenuBack", "Start",
+        "FaceA", "FaceB", "FaceX", "FaceY",
+        "ShoulderL", "ShoulderR",
+        "Accelerate", "Brake", "SteerLeft", "SteerRight"
+    };
+    const char* name = index < std::size(kControlNames) ? kControlNames[index] : "Unknown";
+    LOGD("input: SetVirtualControl %s %s", name, down ? "DOWN" : "UP");
+#endif
 }
 
 Pad Poll(int port) {

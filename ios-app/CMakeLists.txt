@@ -20,6 +20,7 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/AppDelegate.mm"
     "${CMAKE_CURRENT_LIST_DIR}/ViewController.mm"
     "${CMAKE_CURRENT_LIST_DIR}/MetalRenderer.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/app_stub.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/log.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/app/ios_touch_controls.mm"

@@ -1,6 +1,7 @@
 #import "ViewController.h"
 #import "MetalRenderer.h"
 #import "app/ios_touch_controls.h"
+#include "core/input.h"
 #include "core/log.h"
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -42,6 +43,10 @@
     // Initialize logging subsystem
     logx::Init("/tmp", "mc3ios");
     LOGI("MC3 iOS Host: UIKit app host started");
+
+    // Initialize input subsystem (SDL gamepad + virtual controls)
+    input::Init();
+    LOGI("MC3 iOS Host: Input subsystem initialized");
 
     // Initialize Metal renderer - get metal layer from sublayers
     CAMetalLayer* metalLayer = nil;
@@ -91,11 +96,24 @@
         self.renderer->Draw(currentTime);
     }
 
-    // Log once per second
+    // Log once per second: game loop heartbeat + input state
     static int tickCount = 0;
     tickCount++;
     if (tickCount == 60) {
         LOGD("MC3 iOS Host: Game loop active (60 ticks, time=%.2f)", currentTime);
+
+        // Poll port 0 to verify touch overlay → input routing
+        input::Pad pad = input::Poll(0);
+        if (pad.connected) {
+            LOGI("input: Poll(0) connected — buttons=0x%04X A=%u B=%u X=%u Y=%u L=%u R=%u lx=%d ly=%d",
+                 pad.buttons,
+                 pad.analog[0], pad.analog[1], pad.analog[2], pad.analog[3],
+                 pad.analog[4], pad.analog[5],
+                 (int)pad.lx, (int)pad.ly);
+        } else {
+            LOGD("input: Poll(0) no active input");
+        }
+
         tickCount = 0;
     }
 
