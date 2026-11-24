@@ -21,7 +21,7 @@ Tersedia iOS app host dengan UIKit lifecycle dan touch overlay terintegrasi (`io
 ### Compile-check runtime (Selesai)
 Target opsional `ios-game-runtime/` mengompilasi `input.cpp`, `log.cpp`, serta `ios_touch_controls.mm` terhadap iOS SDK dan SDL3 statis. Pemilihannya melalui `-DMC3_IOS_TARGET=game-runtime-check`. Job `ios-game-runtime-compile-check` pada workflow GitHub Actions berhasil memverifikasi komponen runtime dasar compatible dengan iOS SDK.
 
-### UIKit app host (Baru)
+### UIKit app host (Selesai - Build CI Verified)
 Target `ios-app/` membangun executable iOS dengan:
 - Entry point `UIApplicationMain` menggantikan `wWinMain`
 - `AppDelegate` dan `ViewController` untuk lifecycle iOS
@@ -29,8 +29,19 @@ Target `ios-app/` membangun executable iOS dengan:
 - Placeholder game loop menggunakan `CADisplayLink` (60fps display sync)
 - `Info.plist` dengan landscape-only orientation dan status bar hidden
 - SDL3 static library linked
+- Logging menggunakan `logx::` namespace dan macro `LOGI/LOGE/LOGD`
 
-Pemilihannya melalui `-DMC3_IOS_TARGET=ios-app`. Job workflow `ios-app-host` membangun dan package unsigned IPA. App ini adalah foundation untuk integrasi renderer dan game logic, bukan game yang playable. Belum diverifikasi di GitHub Actions atau perangkat.
+Pemilihannya melalui `-DMC3_IOS_TARGET=ios-app`. Job workflow `ios-app-host` berhasil membangun dan package unsigned IPA (249 KB). Build verified di GitHub Actions macos-15 runner. App ini adalah foundation untuk integrasi renderer dan game logic, bukan game yang playable. Belum ditest di perangkat fisik atau simulator.
+
+### Metal renderer basic (In Progress - Belum Build CI)
+Implementasi `MetalRenderer` class untuk clear-screen dengan animasi warna:
+- `MetalRenderer.h` dan `MetalRenderer.mm` - C++ wrapper untuk Metal API
+- Init membuat `MTLDevice` (GPU) dan command queue
+- Draw render animated clear color cycling RGB spectrum (5s period)
+- Terintegrasi ke `ViewController`: view backing layer jadi `CAMetalLayer`, render loop panggil `renderer->Draw()`
+- Metal framework linked di CMakeLists.txt
+
+Belum di-push ke GitHub atau diverifikasi di CI. Setelah build sukses, app akan menampilkan layar solid dengan warna animasi sebagai proof Metal pipeline berfungsi.
 
 ## Langkah berikutnya
 
