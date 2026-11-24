@@ -170,6 +170,14 @@ void MergeWindowsKeyboard(Pad& p) {
 }  // namespace
 
 void Init() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // On iOS, SDL_Init conflicts with the UIKit main event loop and crashes on launch.
+    // Virtual controls (SetVirtualControl / Poll) work entirely without SDL —
+    // SDL is only needed for physical gamepad support on desktop/Windows.
+    // Physical MFi/controller support can be added later via GameController.framework.
+    LOGI("input: iOS mode — virtual controls only, SDL skipped");
+    return;
+#else
     // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
     // so SDL's own thread takes the device notices.
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
@@ -191,6 +199,7 @@ void Init() {
         for (int i = 0; i < count; i++) AddPad(ids[i]);
         SDL_free(ids);
     }
+#endif
 }
 
 void OnKey(uint32_t vk, bool down) {
