@@ -66,14 +66,23 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, ".xxxx", " /*.xxxx*/");  // Wait — we need float4(...) instead!
     // Revert that and handle known `.xxxx` expressions cleanly:
     ReplaceAll(s, " /*.xxxx*/", ".xxxx");
-    s = std::regex_replace(s, std::regex(R"(\(1\.0 / v\)\.xxxx)"), "float4(1.0f / v)");
     s = std::regex_replace(s, std::regex(R"(magclamp\(1\.0 / v\)\.xxxx)"), "float4(magclamp(1.0f / v))");
+    s = std::regex_replace(s, std::regex(R"(\(1\.0 / v\)\.xxxx)"), "float4(1.0f / v)");
     s = std::regex_replace(s, std::regex(R"(\(rsqrt\(abs\(v\)\)\)\.xxxx)"), "float4(rsqrt(abs(v)))");
     s = std::regex_replace(s, std::regex(R"(\(INFINITY\)\.xxxx)"), "float4(INFINITY)");
     s = std::regex_replace(s, std::regex(R"(dot\(([^;{}]+?)\)\.xxxx)"), "float4(dot($1))");
     s = std::regex_replace(s, std::regex(R"(t\.SampleCmpLevelZero\(([^;{}]+?)\)\.xxxx)"), "float4(t.sample_compare($1))");
 
+    // Fix MSL type/overload ambiguities in VS/PS helpers
+    ReplaceAll(s, "max(s.x, 0)", "max(s.x, 0.0f)");
+    ReplaceAll(s, "max(s.y, 0)", "max(s.y, 0.0f)");
+    ReplaceAll(s, "clamp(z, 0, mx)", "clamp(z, 0.0f, mx)");
+    ReplaceAll(s, "return (b - (b >= 128 ? hi : lo)) / d;", "return (b - select(float3(lo), float3(hi), b >= 128.0f)) / d;");
+
     // Texture sampling methods
+    ReplaceAll(s,
+               "t.SampleLevel(s, uv + w.xy * (float2(x, y) - (n - 1) * 0.5), 0)",
+               "t.sample(s, uv + w.xy * (float2(x, y) - (n - 1) * 0.5f), level(0.0f))");
     s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.(?:SampleCmpLevelZero)\(([^)]+)\))"), "$1.sample_compare($2)");
     s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.SampleLevel\(([^,]+),\s*([^,]+),\s*([^)]+)\))"), "$1.sample($2, $3, level($4))");
     s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.Sample\()"), "$1.sample(");
