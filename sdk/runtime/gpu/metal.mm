@@ -61,21 +61,25 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
 }
 )";
 
-MTLBlendFactor ToMetalBlend(uint32_t d3d_blend, bool is_src) {
-    // D3DBLEND values (Xbox XDK / D3D8): 1=ZERO, 2=ONE, 3=SRCCOLOR, 4=INVSRCCOLOR,
-    // 5=SRCALPHA, 6=INVSRCALPHA, 7=DESTALPHA, 8=INVDESTALPHA, 9=DESTCOLOR, 10=INVDESTCOLOR
-    switch (d3d_blend) {
-    case 1: return MTLBlendFactorZero;
-    case 2: return MTLBlendFactorOne;
-    case 3: return MTLBlendFactorSourceColor;
-    case 4: return MTLBlendFactorOneMinusSourceColor;
-    case 5: return MTLBlendFactorSourceAlpha;
-    case 6: return MTLBlendFactorOneMinusSourceAlpha;
-    case 7: return MTLBlendFactorDestinationAlpha;
-    case 8: return MTLBlendFactorOneMinusDestinationAlpha;
-    case 9: return MTLBlendFactorDestinationColor;
-    case 10: return MTLBlendFactorOneMinusDestinationColor;
-    default: return is_src ? MTLBlendFactorOne : MTLBlendFactorZero;
+MTLBlendFactor ToMetalBlend(uint32_t nv_blend, bool is_src) {
+    // Xbox NV2A uses OpenGL blend factor enums (not D3DBLEND 1..10).
+    switch (nv_blend) {
+    case 0:      return MTLBlendFactorZero;
+    case 1:      return MTLBlendFactorOne;
+    case 0x300:  return MTLBlendFactorSourceColor;
+    case 0x301:  return MTLBlendFactorOneMinusSourceColor;
+    case 0x302:  return MTLBlendFactorSourceAlpha;
+    case 0x303:  return MTLBlendFactorOneMinusSourceAlpha;
+    case 0x304:  return MTLBlendFactorDestinationAlpha;
+    case 0x305:  return MTLBlendFactorOneMinusDestinationAlpha;
+    case 0x306:  return MTLBlendFactorDestinationColor;
+    case 0x307:  return MTLBlendFactorOneMinusDestinationColor;
+    case 0x308:  return MTLBlendFactorSourceAlphaSaturated;
+    case 0x8001:
+    case 0x8003: return MTLBlendFactorBlendColor;
+    case 0x8002:
+    case 0x8004: return MTLBlendFactorOneMinusBlendColor;
+    default:     return is_src ? MTLBlendFactorOne : MTLBlendFactorZero;
     }
 }
 
@@ -175,7 +179,7 @@ public:
         vs_func_ = vs;
         fs_func_ = fs;
 
-        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 2, 1);
+        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0);
         if (!pipeline_) return false;
 
         // 1x1 white fallback texture for untextured draws
@@ -199,7 +203,14 @@ public:
         return true;
     }
 
-    void Clear(const State&, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
+    bool IsOffscreenTarget(const State& s) const {
+        if (!s.rt.data) return false;
+        return (s.rt.width && s.rt.width != guest_width_) ||
+               (s.rt.height && s.rt.height != guest_height_);
+    }
+
+    void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
+        if (IsOffscreenTarget(s)) return;
         if (flags & kClearTarget) {
             const double a = ((color >> 24) & 0xFF) / 255.0;
             const double r = ((color >> 16) & 0xFF) / 255.0;
@@ -216,6 +227,13 @@ public:
 
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
         if (!pipeline_ || !layer_) return;
+        if (IsOffscreenTarget(s)) return;
+        @autoreleasepool {
+            DrawImpl(s, prim, start, count, indices);
+        }
+    }
+
+    void DrawImpl(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
 
         Assembled a;
         if (!Assemble(s, prim, start, count, indices, a)) return;
@@ -468,29 +486,33 @@ public:
 
     void Present(const Surface&) override {
         if (!layer_ || !queue_) return;
-        if (!encoder_ && has_clear_) EnsureEncoder();
-        if (encoder_) {
-            [encoder_ endEncoding];
-            encoder_ = nil;
+        @autoreleasepool {
+            if (!encoder_ && has_clear_) EnsureEncoder();
+            if (encoder_) {
+                [encoder_ endEncoding];
+                encoder_ = nil;
+            }
+            if (cmd_buf_) {
+                if (drawable_) [cmd_buf_ presentDrawable:drawable_];
+                [cmd_buf_ commit];
+                last_cmd_buf_ = cmd_buf_;
+                cmd_buf_ = nil;
+                drawable_ = nil;
+            }
+            has_clear_ = false;
+            has_depth_clear_ = false;
         }
-        if (cmd_buf_) {
-            if (drawable_) [cmd_buf_ presentDrawable:drawable_];
-            [cmd_buf_ commit];
-            last_cmd_buf_ = cmd_buf_;
-            cmd_buf_ = nil;
-            drawable_ = nil;
-        }
-        has_clear_ = false;
-        has_depth_clear_ = false;
     }
 
     void Sync(uint32_t, uint32_t) override { Flush(); }
     void SyncLate(uint32_t) override { Flush(); }
 
     void Flush() override {
-        if (last_cmd_buf_) {
-            [last_cmd_buf_ waitUntilCompleted];
-            last_cmd_buf_ = nil;
+        @autoreleasepool {
+            if (last_cmd_buf_) {
+                [last_cmd_buf_ waitUntilCompleted];
+                last_cmd_buf_ = nil;
+            }
         }
     }
 
