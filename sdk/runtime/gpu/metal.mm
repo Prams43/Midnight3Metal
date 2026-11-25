@@ -389,6 +389,13 @@ public:
         }
 
         const MTLPrimitiveType mtl_prim = ToMetalPrimitive(a.topology, a.strip);
+        static int s_draw_logs = 0;
+        if (s_draw_logs < 5) {
+            s_draw_logs++;
+            LOGE("metal: Draw#%d verts=%u draw=%u idx=%u idx16=%d indices_vec=%zu baseV=%d trans=%d pso=%d",
+                 s_draw_logs, a.vertex_count, a.draw_count, a.index_count, a.index16 ? 1 : 0,
+                 a.indices.size(), a.base_vertex, use_translated ? 1 : 0, pso ? 1 : 0);
+        }
         if (a.index_count > 0 && !a.indices.empty()) {
             id<MTLBuffer> ib = [device_ newBufferWithBytes:a.indices.data()
                                                    length:a.indices.size() * sizeof(uint32_t)
@@ -398,9 +405,27 @@ public:
                                      indexCount:a.index_count
                                       indexType:MTLIndexTypeUInt32
                                     indexBuffer:ib
-                              indexBufferOffset:0];
+                              indexBufferOffset:0
+                                  instanceCount:1
+                                     baseVertex:a.base_vertex
+                                   baseInstance:0];
             }
-        } else {
+        } else if (a.index_count > 0 && a.index_src) {
+            const size_t idx_bytes = size_t(a.index_count) * (a.index16 ? sizeof(uint16_t) : sizeof(uint32_t));
+            id<MTLBuffer> ib = [device_ newBufferWithBytes:a.index_src
+                                                   length:idx_bytes
+                                                  options:MTLResourceStorageModeShared];
+            if (ib) {
+                [encoder_ drawIndexedPrimitives:mtl_prim
+                                     indexCount:a.index_count
+                                      indexType:(a.index16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32)
+                                    indexBuffer:ib
+                              indexBufferOffset:0
+                                  instanceCount:1
+                                     baseVertex:a.base_vertex
+                                   baseInstance:0];
+            }
+        } else if (a.draw_count > 0) {
             [encoder_ drawPrimitives:mtl_prim vertexStart:0 vertexCount:a.draw_count];
         }
     }
@@ -410,6 +435,12 @@ public:
     void Present(const Surface&) override {
         if (!layer_ || !queue_) return;
         if (!encoder_ && has_clear_) EnsureEncoder();
+        static int s_pres_logs = 0;
+        if (s_pres_logs < 3) {
+            s_pres_logs++;
+            LOGE("metal: Present#%d enc=%d cmd=%d draw=%d clear=%d",
+                 s_pres_logs, encoder_ ? 1 : 0, cmd_buf_ ? 1 : 0, drawable_ ? 1 : 0, has_clear_ ? 1 : 0);
+        }
         if (encoder_) {
             [encoder_ endEncoding];
             encoder_ = nil;
