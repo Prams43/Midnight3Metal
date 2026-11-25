@@ -397,33 +397,71 @@ public:
                  a.indices.size(), a.base_vertex, use_translated ? 1 : 0, pso ? 1 : 0);
         }
         if (a.index_count > 0 && !a.indices.empty()) {
-            id<MTLBuffer> ib = [device_ newBufferWithBytes:a.indices.data()
-                                                   length:a.indices.size() * sizeof(uint32_t)
+            const uint32_t* idx_ptr = a.indices.data();
+            std::vector<uint32_t> biased32;
+            if (a.base_vertex != 0) {
+                biased32.resize(a.index_count);
+                for (uint32_t k = 0; k < a.index_count; ++k) {
+                    int64_t v = int64_t(a.indices[k]) + int64_t(a.base_vertex);
+                    biased32[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
+                }
+                idx_ptr = biased32.data();
+            }
+            id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
+                                                   length:size_t(a.index_count) * sizeof(uint32_t)
                                                   options:MTLResourceStorageModeShared];
             if (ib) {
                 [encoder_ drawIndexedPrimitives:mtl_prim
                                      indexCount:a.index_count
                                       indexType:MTLIndexTypeUInt32
                                     indexBuffer:ib
-                              indexBufferOffset:0
-                                  instanceCount:1
-                                     baseVertex:a.base_vertex
-                                   baseInstance:0];
+                              indexBufferOffset:0];
             }
         } else if (a.index_count > 0 && a.index_src) {
-            const size_t idx_bytes = size_t(a.index_count) * (a.index16 ? sizeof(uint16_t) : sizeof(uint32_t));
-            id<MTLBuffer> ib = [device_ newBufferWithBytes:a.index_src
-                                                   length:idx_bytes
-                                                  options:MTLResourceStorageModeShared];
-            if (ib) {
-                [encoder_ drawIndexedPrimitives:mtl_prim
-                                     indexCount:a.index_count
-                                      indexType:(a.index16 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32)
-                                    indexBuffer:ib
-                              indexBufferOffset:0
-                                  instanceCount:1
-                                     baseVertex:a.base_vertex
-                                   baseInstance:0];
+            if (a.index16) {
+                const auto* src16 = static_cast<const uint16_t*>(a.index_src);
+                const uint16_t* idx_ptr = src16;
+                std::vector<uint16_t> biased16;
+                if (a.base_vertex != 0) {
+                    biased16.resize(a.index_count);
+                    for (uint32_t k = 0; k < a.index_count; ++k) {
+                        int64_t v = int64_t(src16[k]) + int64_t(a.base_vertex);
+                        biased16[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint16_t(v) : 0u;
+                    }
+                    idx_ptr = biased16.data();
+                }
+                id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
+                                                       length:size_t(a.index_count) * sizeof(uint16_t)
+                                                      options:MTLResourceStorageModeShared];
+                if (ib) {
+                    [encoder_ drawIndexedPrimitives:mtl_prim
+                                         indexCount:a.index_count
+                                          indexType:MTLIndexTypeUInt16
+                                        indexBuffer:ib
+                                  indexBufferOffset:0];
+                }
+            } else {
+                const auto* src32 = static_cast<const uint32_t*>(a.index_src);
+                const uint32_t* idx_ptr = src32;
+                std::vector<uint32_t> biased32;
+                if (a.base_vertex != 0) {
+                    biased32.resize(a.index_count);
+                    for (uint32_t k = 0; k < a.index_count; ++k) {
+                        int64_t v = int64_t(src32[k]) + int64_t(a.base_vertex);
+                        biased32[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
+                    }
+                    idx_ptr = biased32.data();
+                }
+                id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
+                                                       length:size_t(a.index_count) * sizeof(uint32_t)
+                                                      options:MTLResourceStorageModeShared];
+                if (ib) {
+                    [encoder_ drawIndexedPrimitives:mtl_prim
+                                         indexCount:a.index_count
+                                          indexType:MTLIndexTypeUInt32
+                                        indexBuffer:ib
+                                  indexBufferOffset:0];
+                }
             }
         } else if (a.draw_count > 0) {
             [encoder_ drawPrimitives:mtl_prim vertexStart:0 vertexCount:a.draw_count];
