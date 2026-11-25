@@ -99,8 +99,13 @@ void MergeVirtualControls(Pad& p) {
     const bool brake = down(SDL_SCANCODE_S) || VirtualControlDown(VirtualControl::Brake);
     const bool steer_right = down(SDL_SCANCODE_D) || VirtualControlDown(VirtualControl::SteerRight);
     const bool steer_left = down(SDL_SCANCODE_A) || VirtualControlDown(VirtualControl::SteerLeft);
-    // Virtual input is exposed only on port 0; setting connected here would
-    // otherwise make a no-controller iOS session report a permanent gamepad.
+    // Virtual input is exposed only on port 0.
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // On iOS there is no keyboard fallback, so keep port 0 permanently connected
+    // for virtual touch controls; otherwise releasing a button disconnects XInput
+    // and causes the game to repeatedly reopen the controller handle.
+    p.connected = true;
+#endif
     const bool active = dpad_up || dpad_down || dpad_left || dpad_right || confirm || back || start || face_a || face_b ||
                         face_x || face_y || shoulder_l || shoulder_r || accelerate || brake || steer_left || steer_right;
     if (!active) return; // A touch press makes the synthesized controller available for this poll.

@@ -268,6 +268,7 @@ public:
         // Resolve textures & TexInfo for all 4 stages
         id<MTLTexture> stage_tex[4] = { white_tex_, white_tex_, white_tex_, white_tex_ };
         TexInfo tex_info[4]{};
+        float tex_dims[4][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}};
         for (int t = 0; t < 4; ++t) {
             if (s.textures[t]) {
                 TextureDesc td;
@@ -276,6 +277,8 @@ public:
                     stage_tex[t] = mt;
                     tex_info[t].kind = (td.cube) ? kTexCube : (td.depth > 1) ? kTex3D : kTex2D;
                     tex_info[t].rect = td.linear ? 1 : 0;
+                    tex_dims[t][0] = td.width ? float(td.width) : 1.0f;
+                    tex_dims[t][1] = td.height ? float(td.height) : 1.0f;
                 }
             }
         }
@@ -381,7 +384,7 @@ public:
 
         if (use_translated) {
             DrawConstants dc{};
-            FillDrawConstants(s, dc);
+            FillDrawConstants(s, dc, tex_dims);
             [encoder_ setVertexBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
             [encoder_ setVertexBytes:&dc length:sizeof(dc) atIndex:17];
             [encoder_ setFragmentBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
@@ -527,7 +530,7 @@ private:
         }
     }
 
-    void FillDrawConstants(const State& s, DrawConstants& dc) {
+    void FillDrawConstants(const State& s, DrawConstants& dc, const float tex_dims[4][2]) {
         dc.surf[0] = float(guest_width_);
         dc.surf[1] = float(guest_height_);
         dc.surf[2] = s.zscale > 0.0f ? (1.0f / s.zscale) : (1.0f / 16777215.0f);
@@ -577,8 +580,8 @@ private:
         MulMat4(wv, s.transforms[3].data(), dc.wvp);
         for (int t = 0; t < 4; ++t) {
             std::memcpy(dc.tm[t], s.transforms[4 + t].data(), 64);
-            dc.texsize[t][0] = 1.0f;
-            dc.texsize[t][1] = 1.0f;
+            dc.texsize[t][0] = tex_dims[t][0];
+            dc.texsize[t][1] = tex_dims[t][1];
         }
     }
 

@@ -297,6 +297,11 @@ void Mc3MainLoopPadProbe(X86Context& ctx, uint8_t* base) {
     if (down(VK_RETURN) || down('Z')) current |= 0x40;  // A
 #else
     uint32_t current = 0;
+    {
+        const input::Pad pad = input::Poll(0);
+        if (pad.buttons & (1u << 4)) current |= 0x800;  // Start
+        if (pad.analog[0] >= 128) current |= 0x40;      // A
+    }
 #endif
     if (g_live_ui_state && g_live_ui_state->frame_counter <= g_live_ui_state->automation_until_frame) {
         if (g_live_ui_state->automation_buttons & (1u << 4)) current |= 0x800;
