@@ -1,5 +1,7 @@
 #include "gpu/backend.h"
 #include "gpu/metal.h"
+#include "gpu/metal_shaders.h"
+#include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "core/log.h"
@@ -13,6 +15,7 @@
 #include <cstring>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace gpu {
@@ -33,8 +36,8 @@ using namespace metal;
 
 struct VertexIn {
     float4 position [[attribute(0)]];
-    float4 color [[attribute(1)]];
-    float2 uv [[attribute(2)]];
+    float4 color [[attribute(3)]];
+    float2 uv [[attribute(9)]];
 };
 
 struct VertexOut {
@@ -157,13 +160,13 @@ public:
         vd.attributes[0].offset = offsetof(MetalVertex, pos);
         vd.attributes[0].bufferIndex = 0;
 
-        vd.attributes[1].format = MTLVertexFormatFloat4;
-        vd.attributes[1].offset = offsetof(MetalVertex, col);
-        vd.attributes[1].bufferIndex = 0;
+        vd.attributes[3].format = MTLVertexFormatFloat4;
+        vd.attributes[3].offset = offsetof(MetalVertex, col);
+        vd.attributes[3].bufferIndex = 0;
 
-        vd.attributes[2].format = MTLVertexFormatFloat2;
-        vd.attributes[2].offset = offsetof(MetalVertex, uv);
-        vd.attributes[2].bufferIndex = 0;
+        vd.attributes[9].format = MTLVertexFormatFloat2;
+        vd.attributes[9].offset = offsetof(MetalVertex, uv);
+        vd.attributes[9].bufferIndex = 0;
 
         vd.layouts[0].stride = sizeof(MetalVertex);
         vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
@@ -172,7 +175,7 @@ public:
         vs_func_ = vs;
         fs_func_ = fs;
 
-        pipeline_ = GetPipeline(false, 2, 1);
+        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 2, 1);
         if (!pipeline_) return false;
 
         // 1x1 white fallback texture for untextured draws
@@ -262,6 +265,50 @@ public:
             }
         };
 
+        // Resolve textures & TexInfo for all 4 stages
+        id<MTLTexture> stage_tex[4] = { white_tex_, white_tex_, white_tex_, white_tex_ };
+        TexInfo tex_info[4]{};
+        for (int t = 0; t < 4; ++t) {
+            if (s.textures[t]) {
+                TextureDesc td;
+                id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], &td);
+                if (mt) {
+                    stage_tex[t] = mt;
+                    tex_info[t].kind = (td.cube) ? kTexCube : (td.depth > 1) ? kTex3D : kTex2D;
+                    tex_info[t].rect = td.linear ? 1 : 0;
+                }
+            }
+        }
+
+        // Determine active vertex registers supplied by our MetalVertex layout (v0=pos, v3=col, v9=uv)
+        const uint16_t supplied_regs = (1u << 0) | (1u << 3) | (1u << 9);
+        uint64_t vs_hash = 0, ps_hash = 0;
+        id<MTLFunction> active_vs = nil;
+        id<MTLFunction> active_fs = nil;
+
+        {
+            std::string vs_hlsl = (s.vs && !s.vs->program.empty())
+                ? VertexProgramHlsl(s.vs->program, supplied_regs, 0)
+                : FixedVertexHlsl(supplied_regs, a.pretransformed, 0, MakeFixedKey(s));
+            std::string vs_msl = TranslateVertexHlslToMsl(vs_hlsl, supplied_regs);
+            vs_hash = Hash(vs_msl.data(), vs_msl.size());
+            active_vs = GetOrCompileFunction(vs_hash, vs_msl, @"vs_main", vs_cache_);
+
+            PixelKey pk = MakePixelKey(s, tex_info);
+            std::string ps_hlsl = PixelHlsl(pk);
+            std::string ps_msl = TranslatePixelHlslToMsl(ps_hlsl, pk);
+            ps_hash = Hash(ps_msl.data(), ps_msl.size());
+            active_fs = GetOrCompileFunction(ps_hash, ps_msl, @"fs_main", fs_cache_);
+        }
+
+        const bool use_translated = (active_vs != nil && active_fs != nil);
+        if (!use_translated) {
+            active_vs = vs_func_;
+            active_fs = fs_func_;
+            vs_hash = 0;
+            ps_hash = 0;
+        }
+
         std::vector<MetalVertex> verts(a.vertex_count);
         const float inv_w = 2.0f / float(guest_width_);
         const float inv_h = 2.0f / float(guest_height_);
@@ -269,7 +316,13 @@ public:
         for (uint32_t i = 0; i < a.vertex_count; ++i) {
             float p[4] = {};
             if (!read_attr(0, i, p)) return;
-            if (a.pretransformed) {
+            if (use_translated) {
+                // Translated HLSL->MSL vertex shaders expect raw guest positions (fixed or programmable)
+                verts[i].pos[0] = p[0];
+                verts[i].pos[1] = p[1];
+                verts[i].pos[2] = p[2];
+                verts[i].pos[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
+            } else if (a.pretransformed) {
                 verts[i].pos[0] = p[0] * inv_w - 1.0f;
                 verts[i].pos[1] = 1.0f - p[1] * inv_h;
                 verts[i].pos[2] = p[2];
@@ -304,16 +357,13 @@ public:
         const bool blend_on = s.simple[kMBlendEnable / 4] != 0;
         const uint32_t src_b = s.simple[kMSrcBlend / 4];
         const uint32_t dst_b = s.simple[kMDestBlend / 4];
-        id<MTLRenderPipelineState> pso = GetPipeline(blend_on, src_b, dst_b);
+        id<MTLRenderPipelineState> pso = GetPipeline(vs_hash, ps_hash, active_vs, active_fs, blend_on, src_b, dst_b);
         if (!pso) return;
 
         const bool z_en = s.rs[kRsZEnable] != 0;
         const bool z_wr = s.simple[kMZWriteEnable / 4] != 0;
         const uint32_t z_fn = s.simple[kMZFunc / 4];
         id<MTLDepthStencilState> dss = GetDepthStencil(z_en, z_wr, z_fn);
-
-        id<MTLTexture> tex0 = s.textures[0] ? ResolveTexture(s.textures[0], s.palettes[0]) : white_tex_;
-        if (!tex0) tex0 = white_tex_;
 
         const size_t vb_bytes = verts.size() * sizeof(MetalVertex);
         id<MTLBuffer> vb = [device_ newBufferWithBytes:verts.data()
@@ -323,9 +373,20 @@ public:
 
         [encoder_ setRenderPipelineState:pso];
         if (dss) [encoder_ setDepthStencilState:dss];
-        [encoder_ setFragmentTexture:tex0 atIndex:0];
-        [encoder_ setFragmentSamplerState:sampler_ atIndex:0];
+        for (int t = 0; t < 4; ++t) {
+            [encoder_ setFragmentTexture:stage_tex[t] atIndex:t];
+            [encoder_ setFragmentSamplerState:sampler_ atIndex:t];
+        }
         [encoder_ setVertexBuffer:vb offset:0 atIndex:0];
+
+        if (use_translated) {
+            DrawConstants dc{};
+            FillDrawConstants(s, dc);
+            [encoder_ setVertexBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
+            [encoder_ setVertexBytes:&dc length:sizeof(dc) atIndex:17];
+            [encoder_ setFragmentBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
+            [encoder_ setFragmentBytes:&dc length:sizeof(dc) atIndex:17];
+        }
 
         const MTLPrimitiveType mtl_prim = ToMetalPrimitive(a.topology, a.strip);
         if (a.index_count > 0 && !a.indices.empty()) {
@@ -364,8 +425,8 @@ public:
         has_depth_clear_ = false;
     }
 
-    void Sync(uint32_t, uint32_t) override {}
-    void SyncLate(uint32_t) override {}
+    void Sync(uint32_t, uint32_t) override { Flush(); }
+    void SyncLate(uint32_t) override { Flush(); }
 
     void Flush() override {
         if (last_cmd_buf_) {
@@ -384,13 +445,97 @@ private:
         uint64_t epoch = ~0ull;
     };
 
-    id<MTLRenderPipelineState> GetPipeline(bool blend, uint32_t src_b, uint32_t dst_b) {
-        const uint64_t key = (uint64_t(blend) << 32) | (uint64_t(src_b) << 16) | uint64_t(dst_b);
+    id<MTLFunction> GetOrCompileFunction(uint64_t hash, const std::string& msl, NSString* entry,
+                                         std::unordered_map<uint64_t, id<MTLFunction>>& cache) {
+        if (auto it = cache.find(hash); it != cache.end()) return it->second;
+        NSError* err = nil;
+        id<MTLLibrary> lib = [device_ newLibraryWithSource:@(msl.c_str()) options:nil error:&err];
+        if (!lib) {
+            if (failed_shaders_.insert(hash).second) {
+                LOGE("metal: MSL compile failed (%s): %s", [entry UTF8String], [[err localizedDescription] UTF8String]);
+            }
+            cache[hash] = nil;
+            return nil;
+        }
+        id<MTLFunction> fn = [lib newFunctionWithName:entry];
+        cache[hash] = fn;
+        return fn;
+    }
+
+    static void MulMat4(const float a[16], const float b[16], float out[16]) {
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                out[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
+                                 a[r * 4 + 2] * b[2 * 4 + c] + a[r * 4 + 3] * b[3 * 4 + c];
+            }
+        }
+    }
+
+    void FillDrawConstants(const State& s, DrawConstants& dc) {
+        dc.surf[0] = float(guest_width_);
+        dc.surf[1] = float(guest_height_);
+        dc.surf[2] = s.zscale > 0.0f ? (1.0f / s.zscale) : (1.0f / 16777215.0f);
+        dc.surf[3] = 0.0f;
+
+        auto f32 = [](uint32_t u) {
+            float f;
+            std::memcpy(&f, &u, 4);
+            return f;
+        };
+        dc.fog[0] = f32(s.rs[kRsFogStart]);
+        dc.fog[1] = f32(s.rs[kRsFogEnd]);
+        dc.fog[2] = f32(s.rs[kRsFogDensity]);
+        dc.fog[3] = s.rs[kRsFogEnable] ? float(s.rs[kRsFogTableMode]) : 0.0f;
+
+        const uint32_t fc = s.rs[kRsFogColor];
+        dc.fog_color[0] = ((fc >> 16) & 0xFF) / 255.0f;
+        dc.fog_color[1] = ((fc >> 8) & 0xFF) / 255.0f;
+        dc.fog_color[2] = (fc & 0xFF) / 255.0f;
+        dc.fog_color[3] = ((fc >> 24) & 0xFF) / 255.0f;
+
+        dc.misc[0] = float(s.simple[kMAlphaRef / 4] & 0xFF);
+        dc.misc[1] = s.simple[kMAlphaTestEnable / 4] ? float(s.simple[kMAlphaFunc / 4] & 7) : 7.0f;
+        dc.misc[2] = float(s.rs[kRsShadowFunc]);
+        dc.misc[3] = s.rs[kRsSpecularEnable] ? 1.0f : 0.0f;
+
+        const uint32_t tf = s.rs[kRsTextureFactor];
+        dc.tfactor[0] = ((tf >> 16) & 0xFF) / 255.0f;
+        dc.tfactor[1] = ((tf >> 8) & 0xFF) / 255.0f;
+        dc.tfactor[2] = (tf & 0xFF) / 255.0f;
+        dc.tfactor[3] = ((tf >> 24) & 0xFF) / 255.0f;
+
+        for (int i = 0; i < 8; ++i) {
+            auto unpack_c = [&](uint32_t v, float out[4]) {
+                out[0] = ((v >> 16) & 0xFF) / 255.0f;
+                out[1] = ((v >> 8) & 0xFF) / 255.0f;
+                out[2] = (v & 0xFF) / 255.0f;
+                out[3] = ((v >> 24) & 0xFF) / 255.0f;
+            };
+            unpack_c(s.simple[kMPsConstant0 / 4 + i], dc.pc[i * 2 + 0]);
+            unpack_c(s.simple[kMPsConstant1 / 4 + i], dc.pc[i * 2 + 1]);
+        }
+        std::memcpy(dc.wv, s.transforms[256].data(), 64);
+        float wv[16];
+        MulMat4(s.transforms[256].data(), s.transforms[2].data(), wv);
+        std::memcpy(dc.wv, wv, 64);
+        MulMat4(wv, s.transforms[3].data(), dc.wvp);
+        for (int t = 0; t < 4; ++t) {
+            std::memcpy(dc.tm[t], s.transforms[4 + t].data(), 64);
+            dc.texsize[t][0] = 1.0f;
+            dc.texsize[t][1] = 1.0f;
+        }
+    }
+
+    id<MTLRenderPipelineState> GetPipeline(uint64_t vs_hash, uint64_t ps_hash,
+                                           id<MTLFunction> vs, id<MTLFunction> fs,
+                                           bool blend, uint32_t src_b, uint32_t dst_b) {
+        const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^
+                             ((uint64_t(blend) << 32) | (uint64_t(src_b) << 16) | uint64_t(dst_b));
         if (auto it = pso_cache_.find(key); it != pso_cache_.end()) return it->second;
 
         MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-        desc.vertexFunction = vs_func_;
-        desc.fragmentFunction = fs_func_;
+        desc.vertexFunction = vs;
+        desc.fragmentFunction = fs;
         desc.vertexDescriptor = vertex_desc_;
         desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
         desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
@@ -423,9 +568,10 @@ private:
         return dss;
     }
 
-    id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va) {
+    id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va, TextureDesc* out_desc = nullptr) {
         TextureDesc d;
         if (!Describe(header_va, d) || !d.data || !d.width || !d.height) return nil;
+        if (out_desc) *out_desc = d;
         const auto& fi = Format(d.format);
         MTLPixelFormat mtl_fmt = MTLPixelFormatBGRA8Unorm;
         if (fi.host == Host::R32F) mtl_fmt = MTLPixelFormatR32Float;
@@ -513,6 +659,9 @@ private:
     id<MTLTexture> depth_tex_ = nil;
     id<MTLSamplerState> sampler_ = nil;
     std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pso_cache_;
+    std::unordered_map<uint64_t, id<MTLFunction>> vs_cache_;
+    std::unordered_map<uint64_t, id<MTLFunction>> fs_cache_;
+    std::unordered_set<uint64_t> failed_shaders_;
     std::unordered_map<uint32_t, id<MTLDepthStencilState>> dss_cache_;
     std::unordered_map<uint32_t, CachedTex> tex_cache_;
 

@@ -40,6 +40,8 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/vertex.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/texture.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/render_thread.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/shaders.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/metal_shaders.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/metal.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/xdk/bink.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/xdk/crt_math.cpp"
