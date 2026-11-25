@@ -103,6 +103,30 @@ static void OverlayLogLine(const char* line) {
     });
     [MC3DebugOverlay log:@"[AUDIO] AudioQueue started"];
 
+    // Check if default.xbe is present in Documents/ or app bundle
+    NSArray<NSString*>* docPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString* docsDir = docPaths.firstObject ?: tmpDir;
+    NSString* xbeInDocs = [docsDir stringByAppendingPathComponent:@"default.xbe"];
+    NSString* xbeInBundle = [[NSBundle mainBundle] pathForResource:@"default" ofType:@"xbe"];
+    NSString* xbePath = [[NSFileManager defaultManager] fileExistsAtPath:xbeInDocs] ? xbeInDocs
+                      : (xbeInBundle && [[NSFileManager defaultManager] fileExistsAtPath:xbeInBundle] ? xbeInBundle : nil);
+
+    if (xbePath) {
+        NSData* raw = [NSData dataWithContentsOfFile:xbePath];
+        if (raw.length > 0) {
+            std::vector<uint8_t> xbeBytes(static_cast<const uint8_t*>(raw.bytes),
+                                          static_cast<const uint8_t*>(raw.bytes) + raw.length);
+            std::string gameDir = [docsDir UTF8String];
+            std::string dataDir = [[docsDir stringByAppendingPathComponent:@"save"] UTF8String];
+            [[NSFileManager defaultManager] createDirectoryAtPath:[docsDir stringByAppendingPathComponent:@"save"]
+                                      withIntermediateDirectories:YES attributes:nil error:nil];
+            bool booted = kernel::Boot(std::move(xbeBytes), "default.xbe", gameDir, dataDir);
+            [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s", booted ? "OK" : "FAILED (stub/mismatch)"]];
+        }
+    } else {
+        [MC3DebugOverlay log:@"[BOOT] No default.xbe (stub mode, showing test triangle)"];
+    }
+
     // Initialize Metal renderer - get metal layer from sublayers
     CAMetalLayer* metalLayer = nil;
     for (CALayer* layer in self.view.layer.sublayers) {

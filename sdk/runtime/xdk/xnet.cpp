@@ -3,6 +3,8 @@
 // WSANOTINITIALISED on their own, and the XOnline calls with XONLINE_E_NOT_INITIALIZED.
 // Addresses: an XNADDR's ina is the peer's real IPv4, so secure addresses map to IPs one to one.
 // With --instance N the game binds 127.0.0.N and a broadcast goes to the other loopback instances.
+// iOS: XNet uses Winsock, which is not available on Darwin.  The whole module is excluded on non-Windows.
+#ifdef _WIN32
 // Join IP (a host past the LAN): the system link search's broadcasts also go to that address, and the host's
 // broadcasts (a LAN discovery may answer every search with one, to 255.255.255.255) go to the public addresses
 // that have reached it. With one peer (co-op) a LAN address in an XNADDR, which only means something on its
@@ -777,3 +779,5 @@ HLE_STDCALL(WSACancelOverlappedIO, 1) {
     }
     return 0;
 }
+
+#endif  // _WIN32

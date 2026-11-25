@@ -12,9 +12,10 @@
 
 #ifdef _WIN32
 #include <intrin.h>
-#else
+#elif defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
 #endif
+// ARM64 / Apple Silicon: no x86 intrinsics needed — rdtsc is emulated below
 
 namespace {
 

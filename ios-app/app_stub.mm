@@ -2,12 +2,20 @@
 // The full implementations live in the game binary (app/, etc).
 // These stubs satisfy the linker for input.cpp, which calls app::kGame.pad / rumble.
 #include "app/app.h"
-#include "kernel/kernel.h"
+#include "gpu/render_profile.h"
 
-namespace kernel {
-// Defined in boot.cpp; stubbed here until boot.cpp is linked into ios-app.
-uint8_t* g_base = nullptr;
-}  // namespace kernel
+namespace xnet {
+void CloseSockets() {}
+}  // namespace xnet
+
+namespace gpu::render {
+const Config& Get() {
+    static const Config c{};
+    return c;
+}
+bool MotionBlurTuneReady() { return false; }
+void MarkMotionBlurTuneReady() {}
+}  // namespace gpu::render
 
 namespace app {
 
@@ -40,5 +48,11 @@ Settings& Get() {
     static Settings s;
     return s;
 }
+
+bool Widescreen() { return true; }
+void Pace() {}
+void SplashFirstFrame() {}
+bool HandingOver() { return false; }
+void FinishHandover() {}
 
 }  // namespace app
