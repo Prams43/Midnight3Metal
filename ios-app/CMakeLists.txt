@@ -27,6 +27,10 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/app/ios_touch_controls.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/kernel/memory.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/audio/audio_apple.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/vertex.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/texture.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/render_thread.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/gpu/metal.mm"
 )
 
 # Include directories for runtime headers
