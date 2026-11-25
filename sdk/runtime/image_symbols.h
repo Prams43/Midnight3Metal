@@ -17,7 +17,15 @@
 #define SYM_D3D_SimpleRenderStateEncode     00000020
 #define SYM_D3D_VertexShaderConstants       00000024
 
-// D3D optional/function symbols
+// D3D optional/function & data symbols
+#define HAS_D3D_Device                      0
+#define HAS_D3D_pDevice                     0
+#define HAS_D3D_IndexData                   0
+#define HAS_D3D_DirtyFlags                  0
+#define HAS_D3D_DeferredTextureState        0
+#define HAS_D3D_RenderState                 0
+#define HAS_D3D_Streams                     0
+#define HAS_D3D_SimpleRenderStateEncode     0
 #define HAS_D3DDevice_BeginPush             0
 #define HAS_D3DDevice_EndPush               0
 #define HAS_D3D_FvfShader                   0
@@ -129,6 +137,7 @@
 #define SYM_D3DDevice_SetRenderState_DoNotCullUncompressed      FFFFFE6C
 
 // ---- XPP (controller) & XAPI symbols -----------------------------------------
+#define HAS_XPP_GamepadType                 0
 #define HAS_XPP_MemoryUnitType              0
 #define SYM_XPP_GamepadType                 00000100
 #define SYM_XPP_MemoryUnitType              00000104
@@ -167,6 +176,8 @@
 #define SYM__CIasin                         FFFFFD0B
 
 // ---- DirectSound vtable & function symbols -----------------------------------
+#define HAS_DSound_StreamVtable             0
+#define HAS_DSound_StreamVtable2            0
 #define SYM_DSound_StreamVtable             00000200
 #define SYM_DSound_StreamVtable2            00000204
 
