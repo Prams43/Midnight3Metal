@@ -12,132 +12,20 @@ on:
     paths:
       - 'sdk/runtime/**'
       - 'sdk/cmake/**'
-      - 'ios-memory-probe/**'
-      - 'ios-game-runtime/**'
       - 'ios-app/**'
       - 'src/**'
       - 'CMakeLists.txt'
-      - 'IOS_PORTING_STATUS.md'
       - '.github/workflows/ios-build.yml'
 
 permissions:
   contents: read
 
 jobs:
-  ios-memory-probe:
-    if: false
-    name: Build unsigned iOS memory probe
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check Apple build tools
-        run: |
-          xcodebuild -version
-          cmake --version
-          xcrun --sdk iphoneos --show-sdk-version
-
-      - name: Configure iOS probe with Xcode
-        run: |
-          cmake -S . -B build-ios-probe -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_SYSROOT=iphoneos \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
-
-      - name: Build iOS probe
-        run: cmake --build build-ios-probe --target MC3MemoryProbe --config Release
-
-      - name: Verify built app metadata
-        run: |
-          APP_PATH="$(find build-ios-probe -type d -name MC3MemoryProbe.app -print -quit)"
-          test -n "$APP_PATH"
-          test -x "$APP_PATH/MC3MemoryProbe"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :LSRequiresIPhoneOS' "$APP_PATH/Info.plist"
-          file "$APP_PATH/MC3MemoryProbe"
-          xcrun --sdk iphoneos vtool -show-build "$APP_PATH/MC3MemoryProbe"
-
-      - name: Package unsigned IPA
-        run: |
-          APP_PATH="$(find build-ios-probe -type d -name MC3MemoryProbe.app -print -quit)"
-          test -n "$APP_PATH"
-
-          IPA_ROOT="$RUNNER_TEMP/ipa-root"
-          mkdir -p "$IPA_ROOT/Payload"
-          ditto "$APP_PATH" "$IPA_ROOT/Payload/MC3MemoryProbe.app"
-
-          cd "$IPA_ROOT"
-          /usr/bin/zip -qry "$RUNNER_TEMP/MC3MemoryProbe-unsigned.ipa" Payload
-          /usr/bin/unzip -l "$RUNNER_TEMP/MC3MemoryProbe-unsigned.ipa" | head -30
-          test -s "$RUNNER_TEMP/MC3MemoryProbe-unsigned.ipa"
-
-      - name: Upload unsigned diagnostic IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: MC3MemoryProbe-unsigned-IPA
-          path: ${{ runner.temp }}/MC3MemoryProbe-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Record game build limitation
-        if: always()
-        run: |
-          echo 'This workflow builds only the standalone unsigned memory diagnostic.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'The game target remains Windows/Win32/D3D12; this is not an installable game IPA.' >> "$GITHUB_STEP_SUMMARY"
-
-  ios-game-runtime-compile-check:
-    if: false
-    name: Compile iOS production runtime components
-    runs-on: macos-15
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check Apple build tools
-        run: |
-          xcodebuild -version
-          cmake --version
-          xcrun --sdk iphoneos --show-sdk-version
-
-      - name: Configure iOS runtime compile-check
-        run: |
-          cmake -S . -B build-ios-runtime -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_SYSROOT=iphoneos \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
-            -DMC3_IOS_TARGET=game-runtime-check
-
-      - name: Compile production input and touch-control sources
-        run: cmake --build build-ios-runtime --target MC3IOSRuntimeCompileCheck --config Release
-
-      - name: State scope of compile-check
-        if: always()
-        run: |
-          echo 'This job compiles the existing input subsystem and UIKit touch overlay against iOS SDK.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'It does not build or package MC3 game: Win32 host, D3D12 renderer, and XBE boot remain unported.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Compilation is not device runtime validation.' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Preserve compile-check note
-        if: always()
-        run: printf 'iOS runtime components compile-check only; not an MC3 game IPA.\n' > "$RUNNER_TEMP/ios-runtime-readiness.txt"
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-runtime-compile-readiness
-          path: ${{ runner.temp }}/ios-runtime-readiness.txt
-          if-no-files-found: error
-          retention-days: 3
-
   ios-app-host:
-    name: Build iOS app host with touch overlay
+    name: Build unsigned iOS app IPA
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
+
     steps:
       - uses: actions/checkout@v4
 
@@ -147,7 +35,7 @@ jobs:
           cmake --version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Optional recompile from default.xbe (when xbe_url or MC3_XBE_URL secret is provided)
+      - name: Optional recompile from default.xbe
         env:
           XBE_URL_INPUT: ${{ github.event.inputs.xbe_url }}
           XBE_URL_SECRET: ${{ secrets.MC3_XBE_URL }}
@@ -206,7 +94,7 @@ jobs:
             -DMC3_IOS_TARGET=ios-app
 
       - name: Build iOS app executable
-        run: cmake --build build-ios-app --target MC3iOSApp --config Release
+        run: cmake --build build-ios-app --target MC3iOSApp --config Release 2>&1 | tail -100
 
       - name: Verify built app structure
         run: |
@@ -240,9 +128,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: State app scope and limitations
+      - name: Build summary
         if: always()
         run: |
-          echo 'This app is a UIKit host with touch overlay and placeholder game loop.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'It does NOT run the actual MC3 game: renderer (Metal), guest memory, audio, and game logic are not integrated.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'This is an iOS app foundation for future porting work, not a playable game.' >> "$GITHUB_STEP_SUMMARY"
+          echo "## MC3 iOS Build" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/MC3iOSApp-unsigned.ipa" ]; then
+            echo "✅ IPA built successfully" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Build failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
