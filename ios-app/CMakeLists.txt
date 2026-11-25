@@ -25,6 +25,8 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/log.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/app/ios_touch_controls.mm"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/kernel/memory.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/audio/audio_apple.mm"
 )
 
 # Include directories for runtime headers
@@ -70,4 +72,5 @@ target_link_libraries(MC3iOSApp PRIVATE
     "-framework Foundation"
     "-framework QuartzCore"
     "-framework Metal"
+    "-framework AudioToolbox"
 )

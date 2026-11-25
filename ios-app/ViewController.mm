@@ -2,9 +2,15 @@
 #import "MetalRenderer.h"
 #import "app/ios_touch_controls.h"
 #import "MC3DebugOverlay.h"
+#include "audio/audio.h"
 #include "core/input.h"
 #include "core/log.h"
+#include "kernel/memory.h"
 #import <QuartzCore/CAMetalLayer.h>
+#include <atomic>
+#include <cstring>
+
+static std::atomic<uint64_t> g_audioFrames{0};
 
 // Bridge: redirect logx::Write output to the on-screen debug overlay.
 // Called from a C-linkage shim installed at app startup.
@@ -59,6 +65,35 @@ static void OverlayLogLine(const char* line) {
     // Initialize input subsystem (SDL gamepad + virtual controls)
     input::Init();
     LOGI("MC3 iOS Host: Input subsystem initialized");
+
+    // Initialize and smoke-test portable guest memory (4 GiB virtual + shared physical alias)
+    if (mem::Init()) {
+        uint8_t* base = mem::Base();
+        const uint32_t va = mem::AllocContiguous(4096, 0, mem::PhysicalSize() - 1, 4096);
+        bool aliasOk = false;
+        if (va) {
+            const uint32_t wcVa = (va - mem::kContiguousBase) + mem::kWriteCombineBase;
+            auto* pContig = reinterpret_cast<volatile uint32_t*>(base + va);
+            auto* pWc = reinterpret_cast<volatile uint32_t*>(base + wcVa);
+            *pContig = 0x12345678u;
+            aliasOk = (*pWc == 0x12345678u);
+            mem::FreeContiguous(va);
+        }
+        NSString* memMsg = [NSString stringWithFormat:@"[MEM] base=%p alias=%s",
+                            static_cast<void*>(base), aliasOk ? "PASS" : "FAIL"];
+        [MC3DebugOverlay log:memMsg];
+        LOGI("%s", [memMsg UTF8String]);
+    } else {
+        [MC3DebugOverlay log:@"[MEM] Init FAILED"];
+        LOGE("MC3 iOS Host: mem::Init failed");
+    }
+
+    // Initialize Apple Audio Queue output (silent callback to verify audio thread pulls buffers)
+    audio::StartOutput([](float* out, uint32_t frames) {
+        std::memset(out, 0, static_cast<size_t>(frames) * 2 * sizeof(float));
+        g_audioFrames.fetch_add(frames, std::memory_order_relaxed);
+    });
+    [MC3DebugOverlay log:@"[AUDIO] AudioQueue started"];
 
     // Initialize Metal renderer - get metal layer from sublayers
     CAMetalLayer* metalLayer = nil;
@@ -135,8 +170,10 @@ static void OverlayLogLine(const char* line) {
             LOGI("%s", [padStr UTF8String]);
         }
 
-        // Show uptime on overlay every second
-        [MC3DebugOverlay log:[NSString stringWithFormat:@"[LOOP] t=%.1fs", currentTime]];
+        // Show uptime + audio frame count on overlay every second
+        const uint64_t audioFrames = g_audioFrames.load(std::memory_order_relaxed);
+        [MC3DebugOverlay log:[NSString stringWithFormat:@"[LOOP] t=%.1fs audio=%llu",
+                              currentTime, static_cast<unsigned long long>(audioFrames)]];
 
         tickCount = 0;
     }
