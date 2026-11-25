@@ -187,7 +187,7 @@
 #define SYM_DirectSoundDoWork               FFFFFF23
 #define SYM_DirectSoundUseFullHRTF          FFFFFF24
 #define SYM_DirectSoundUseLightHRTF         FFFFFF0B
-#define SYM_XAudioDownloadEffectsImage      FFFFFF12
+#define SYM_XAudioDownloadEffectsImage      FFFFFF25
 
 #define HAS_DirectSoundUseLightHRTF         0
 #define HAS_IDirectSound_SynchPlayback      0
