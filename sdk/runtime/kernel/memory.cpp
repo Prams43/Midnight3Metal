@@ -1,6 +1,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -150,6 +151,16 @@ bool Init() {
 // page commit map, one byte per 4 KB page
 static std::vector<uint8_t> g_committed(0x100000, 0);
 
+#ifndef _WIN32
+static uint64_t HostPageSize() {
+    static const uint64_t hp = [] {
+        long p = sysconf(_SC_PAGESIZE);
+        return p > 0 ? uint64_t(p) : uint64_t(kPage);
+    }();
+    return std::max<uint64_t>(hp, kPage);
+}
+#endif
+
 bool Commit(uint32_t va, uint32_t size) {
     if (!size || InPhysical(va)) return true;
     uint32_t first = va & ~(kPage - 1);
@@ -161,8 +172,12 @@ bool Commit(uint32_t va, uint32_t size) {
         return false;
     }
 #else
-    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {
-        LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
+    const uint64_t hp = HostPageSize();
+    const uint64_t host_first = uint64_t(first) & ~(hp - 1);
+    const uint64_t host_end = (end + hp - 1) & ~(hp - 1);
+    if (mprotect(g_base + host_first, size_t(host_end - host_first), PROT_READ | PROT_WRITE)) {
+        LOGE("memory: commit %08X+%X (host %llX+%llX) failed (errno=%d)", first, uint32_t(end - first),
+             static_cast<unsigned long long>(host_first), static_cast<unsigned long long>(host_end - host_first), errno);
         return false;
     }
 #endif
@@ -175,13 +190,27 @@ void Decommit(uint32_t va, uint32_t size) {
     uint32_t first = va & ~(kPage - 1);
     uint64_t end = (uint64_t(va) + size + kPage - 1) & ~uint64_t(kPage - 1);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
 #ifdef _WIN32
     VirtualFree(g_base + first, size_t(end - first), MEM_DECOMMIT);
 #else
-    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);
-    mprotect(g_base + first, size_t(end - first), PROT_NONE);
+    const uint64_t hp = HostPageSize();
+    const uint64_t host_first = uint64_t(first) & ~(hp - 1);
+    const uint64_t host_end = (end + hp - 1) & ~(hp - 1);
+    for (uint64_t h = host_first; h < host_end; h += hp) {
+        bool any_committed = false;
+        for (uint64_t p = h; p < h + hp; p += kPage) {
+            if (g_committed[size_t(p >> 12)] != 0) {
+                any_committed = true;
+                break;
+            }
+        }
+        if (!any_committed) {
+            madvise(g_base + h, size_t(hp), MADV_DONTNEED);
+            mprotect(g_base + h, size_t(hp), PROT_NONE);
+        }
+    }
 #endif
-    for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
 }
 
 bool IsCommitted(uint32_t va) { return InPhysical(va) || g_committed[va >> 12] != 0; }
