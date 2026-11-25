@@ -95,10 +95,19 @@ uint32_t GuestCall(X86Context& ctx, uint8_t* base, void (*fn)(X86Context&, uint8
 // that has it
 fs::path PathFor(const char* name) {
     static const char kPrefix[] = "$/resources/vehicle/";
-    if (_strnicmp(name, kPrefix, sizeof kPrefix - 1) != 0) return {};
-    std::string rest(name + sizeof kPrefix - 1);
+    constexpr size_t kLen = sizeof(kPrefix) - 1;
+    for (size_t i = 0; i < kLen; ++i) {
+        const unsigned char a = static_cast<unsigned char>(name[i]);
+        const unsigned char b = static_cast<unsigned char>(kPrefix[i]);
+        if (!a) return {};
+        const unsigned char la = (a >= 'A' && a <= 'Z') ? (a + ('a' - 'A')) : a;
+        if (la != b) return {};
+    }
+    std::string rest(name + kLen);
+#ifdef _WIN32
     for (char& c : rest)
         if (c == '/') c = '\\';
+#endif
     std::error_code ec;
     for (const fs::path& folder : Folders())
         if (fs::path p = folder / fs::path(rest + ".pck"); fs::is_regular_file(p, ec)) return p;
