@@ -36,6 +36,7 @@ static void OverlayLogLine(const char* line) {
     std::unique_ptr<gpu::State> _testState;
     uint32_t _testVbHeader;
     uint32_t _testVbData;
+    BOOL _gameBooted;
 }
 
 + (Class)layerClass {
@@ -103,6 +104,20 @@ static void OverlayLogLine(const char* line) {
     });
     [MC3DebugOverlay log:@"[AUDIO] AudioQueue started"];
 
+    // Initialize Metal layer first so d3d8's CreateBackend() can use it if kernel::Boot() succeeds
+    CAMetalLayer* metalLayer = nil;
+    for (CALayer* layer in self.view.layer.sublayers) {
+        if ([layer isKindOfClass:[CAMetalLayer class]]) {
+            metalLayer = (CAMetalLayer*)layer;
+            break;
+        }
+    }
+    if (metalLayer) {
+        gpu::SetMetalLayer((__bridge void*)metalLayer);
+    } else {
+        LOGE("MC3 iOS Host: CAMetalLayer not found in view");
+    }
+
     // Check if default.xbe is present in Documents/ or app bundle
     NSArray<NSString*>* docPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString* docsDir = docPaths.firstObject ?: tmpDir;
@@ -121,56 +136,45 @@ static void OverlayLogLine(const char* line) {
             [[NSFileManager defaultManager] createDirectoryAtPath:[docsDir stringByAppendingPathComponent:@"save"]
                                       withIntermediateDirectories:YES attributes:nil error:nil];
             bool booted = kernel::Boot(std::move(xbeBytes), "default.xbe", gameDir, dataDir);
+            _gameBooted = booted ? YES : NO;
             [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s", booted ? "OK" : "FAILED (stub/mismatch)"]];
         }
     } else {
         [MC3DebugOverlay log:@"[BOOT] No default.xbe (stub mode, showing test triangle)"];
     }
 
-    // Initialize Metal renderer - get metal layer from sublayers
-    CAMetalLayer* metalLayer = nil;
-    for (CALayer* layer in self.view.layer.sublayers) {
-        if ([layer isKindOfClass:[CAMetalLayer class]]) {
-            metalLayer = (CAMetalLayer*)layer;
-            break;
-        }
-    }
+    // Stub mode only: when the real game is not booted, create a standalone MetalBackend for the test triangle.
+    // When _gameBooted == YES, d3d8.cpp owns gpu::CreateBackend() on the game's render thread.
+    if (!_gameBooted && metalLayer) {
+        _gpuBackend = gpu::CreateBackend();
+        if (!_gpuBackend || !_gpuBackend->Init(640, 480)) {
+            _gpuBackend.reset();
+            LOGE("MC3 iOS Host: Failed to initialize gpu::Backend (Metal)");
+            [MC3DebugOverlay log:@"[GPU] MetalBackend FAILED"];
+        } else {
+            LOGI("MC3 iOS Host: gpu::Backend (Metal) initialized (stub mode)");
+            [MC3DebugOverlay log:@"[GPU] MetalBackend ready (640x480)"];
 
-    if (!metalLayer) {
-        LOGE("MC3 iOS Host: CAMetalLayer not found in view");
-        return;
-    }
-
-    // Initialize Metal gpu::Backend
-    gpu::SetMetalLayer((__bridge void*)metalLayer);
-    _gpuBackend = gpu::CreateBackend();
-    if (!_gpuBackend || !_gpuBackend->Init(640, 480)) {
-        _gpuBackend.reset();
-        LOGE("MC3 iOS Host: Failed to initialize gpu::Backend (Metal)");
-        [MC3DebugOverlay log:@"[GPU] MetalBackend FAILED"];
-    } else {
-        LOGI("MC3 iOS Host: gpu::Backend (Metal) initialized");
-        [MC3DebugOverlay log:@"[GPU] MetalBackend ready (640x480)"];
-
-        // Build a minimal pretransformed (XYZRHW | DIFFUSE) triangle in guest memory
-        if (mem::Base()) {
-            struct GuestVert { float x, y, z, rhw; uint32_t color; };
-            _testVbData = mem::AllocContiguous(sizeof(GuestVert) * 3, 0, mem::PhysicalSize() - 1, 16);
-            _testVbHeader = mem::AllocSystem(20, 16);
-            if (_testVbData && _testVbHeader) {
-                auto* v = reinterpret_cast<GuestVert*>(mem::Base() + _testVbData);
-                v[0] = {320.0f, 120.0f, 0.0f, 1.0f, 0xFFFF3333u};
-                v[1] = {160.0f, 360.0f, 0.0f, 1.0f, 0xFF33FF33u};
-                v[2] = {480.0f, 360.0f, 0.0f, 1.0f, 0xFF3388FFu};
-                auto* hdr = reinterpret_cast<uint32_t*>(mem::Base() + _testVbHeader);
-                hdr[0] = 0;
-                hdr[1] = mem::PhysicalFromVirtual(_testVbData);
-                hdr[2] = 0;
-                hdr[3] = 0;
-                hdr[4] = sizeof(GuestVert) * 3;
-                _testState = std::make_unique<gpu::State>();
-                _testState->vs_handle = 0x44;  // D3DFVF_XYZRHW | D3DFVF_DIFFUSE
-                _testState->streams[0] = {_testVbHeader, sizeof(GuestVert)};
+            // Build a minimal pretransformed (XYZRHW | DIFFUSE) triangle in guest memory
+            if (mem::Base()) {
+                struct GuestVert { float x, y, z, rhw; uint32_t color; };
+                _testVbData = mem::AllocContiguous(sizeof(GuestVert) * 3, 0, mem::PhysicalSize() - 1, 16);
+                _testVbHeader = mem::AllocSystem(20, 16);
+                if (_testVbData && _testVbHeader) {
+                    auto* v = reinterpret_cast<GuestVert*>(mem::Base() + _testVbData);
+                    v[0] = {320.0f, 120.0f, 0.0f, 1.0f, 0xFFFF3333u};
+                    v[1] = {160.0f, 360.0f, 0.0f, 1.0f, 0xFF33FF33u};
+                    v[2] = {480.0f, 360.0f, 0.0f, 1.0f, 0xFF3388FFu};
+                    auto* hdr = reinterpret_cast<uint32_t*>(mem::Base() + _testVbHeader);
+                    hdr[0] = 0;
+                    hdr[1] = mem::PhysicalFromVirtual(_testVbData);
+                    hdr[2] = 0;
+                    hdr[3] = 0;
+                    hdr[4] = sizeof(GuestVert) * 3;
+                    _testState = std::make_unique<gpu::State>();
+                    _testState->vs_handle = 0x44;  // D3DFVF_XYZRHW | D3DFVF_DIFFUSE
+                    _testState->streams[0] = {_testVbHeader, sizeof(GuestVert)};
+                }
             }
         }
     }
@@ -202,8 +206,8 @@ static void OverlayLogLine(const char* line) {
 - (void)gameLoopTick:(CADisplayLink*)displayLink {
     double currentTime = CACurrentMediaTime() - self.startTime;
 
-    // Render frame through gpu::Backend
-    if (_gpuBackend) {
+    // Render test triangle only in stub mode (when real game is not booted)
+    if (!_gameBooted && _gpuBackend) {
         gpu::State clearState;
         _gpuBackend->Clear(clearState, 0, nullptr, gpu::kClearTarget, 0xFF0A1020u, 1.0f, 0);
         if (_testState) {

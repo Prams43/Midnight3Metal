@@ -2,6 +2,11 @@ name: iOS build (macOS)
 
 on:
   workflow_dispatch:
+    inputs:
+      xbe_url:
+        description: 'Optional private URL to default.xbe (SHA1 5bca1cf092edaadf876e8f80129900407a4a07b8) to build full recompiled game IPA'
+        required: false
+        default: ''
   push:
     branches: [main]
     paths:
@@ -139,6 +144,47 @@ jobs:
           xcodebuild -version
           cmake --version
           xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Optional recompile from default.xbe (when xbe_url or MC3_XBE_URL secret is provided)
+        env:
+          XBE_URL_INPUT: ${{ github.event.inputs.xbe_url }}
+          XBE_URL_SECRET: ${{ secrets.MC3_XBE_URL }}
+        run: |
+          URL="${XBE_URL_INPUT:-$XBE_URL_SECRET}"
+          if [ -z "$URL" ]; then
+            echo "No XBE URL provided; building stub mode."
+            exit 0
+          fi
+          mkdir -p assets
+          curl -fSL "$URL" -o assets/default.xbe
+          ACTUAL_SHA1=$(shasum -a 1 assets/default.xbe | awk '{print $1}')
+          EXPECTED_SHA1="5bca1cf092edaadf876e8f80129900407a4a07b8"
+          if [ "$ACTUAL_SHA1" != "$EXPECTED_SHA1" ]; then
+            echo "SHA1 mismatch: got $ACTUAL_SHA1, expected $EXPECTED_SHA1"
+            exit 1
+          fi
+          echo "Verified default.xbe ($ACTUAL_SHA1). Building xbe_recomp on macOS..."
+          mkdir -p build-recomp-src
+          cat > build-recomp-src/CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.25)
+          project(xbe_recomp_host LANGUAGES C CXX)
+          set(CMAKE_CXX_STANDARD 20)
+          include(FetchContent)
+          set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+          set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+          set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
+          FetchContent_Declare(zydis GIT_REPOSITORY https://github.com/zyantific/zydis.git GIT_TAG v4.1.1 GIT_SHALLOW TRUE)
+          FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
+          FetchContent_MakeAvailable(zydis tomlplusplus)
+          file(GLOB RECOMP_SRCS "${CMAKE_CURRENT_LIST_DIR}/../sdk/tools/recomp/*.cpp")
+          add_executable(xbe_recomp ${RECOMP_SRCS})
+          target_include_directories(xbe_recomp PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime" "${CMAKE_CURRENT_LIST_DIR}/../sdk/tools/recomp")
+          target_link_libraries(xbe_recomp PRIVATE Zydis tomlplusplus::tomlplusplus)
+          EOF
+          cmake -S build-recomp-src -B build-recomp-host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-recomp-host --target xbe_recomp -j
+          ./build-recomp-host/xbe_recomp config/game.toml --xdk sdk/xdk
+          ls -la generated/game/
 
       - name: Configure iOS app target
         run: |

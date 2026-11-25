@@ -12,10 +12,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
+#endif
 
 #include "core/log.h"
 #include "kernel/memory.h"
@@ -67,6 +69,7 @@ uint32_t g_player_car = 0;
 // win32u on each call: with dense traffic that was a fifth of the title thread. A key is read at most every 8 ms, still
 // several times a frame and far shorter than a key press.
 bool Down(int key) {
+#ifdef _WIN32
     static std::array<Clock::time_point, 256> read_at{};
     static std::array<bool, 256> down{};
     const size_t k = size_t(key) & 255;
@@ -76,6 +79,10 @@ bool Down(int key) {
         down[k] = (GetAsyncKeyState(key) & 0x8000) != 0;
     }
     return down[k];
+#else
+    (void)key;
+    return false;
+#endif
 }
 bool Pressed(int key) {
     static std::array<bool, 256> was{};
@@ -86,13 +93,19 @@ bool Pressed(int key) {
 }
 
 void ReadArgs() {
+#ifdef _WIN32
     if (!g_args.empty()) return;
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return;
     for (int i = 1; i < argc; ++i) g_args.emplace_back(argv[i]);
     LocalFree(argv);
+#endif
 }
+#ifndef _WIN32
+constexpr int VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28;
+constexpr int VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_F7 = 0x76, VK_F8 = 0x77, VK_F9 = 0x78;
+#endif
 
 float FloatArg(const wchar_t* key, float fallback) {
     const wchar_t* value = Mc3DebugArg(key);

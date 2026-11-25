@@ -10,9 +10,11 @@
 #include <mutex>
 #include <unordered_map>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#endif
 
 #include "core/input.h"
 #include "debug_tools.h"
@@ -42,7 +44,9 @@ void InitLiveUiState();
 void Mc3Init() {
     // Keep F3 diagnostics reproducible when the executable is launched directly.
     // It only chooses the destination; no capture work occurs until F3 is pressed.
+#ifdef _WIN32
     _wputenv_s(L"XBE_CAPTURE_DIR", L"gpu_captures");
+#endif
     Mc3DebugInit();
     if (Mc3DebugHasArg(L"--mc2-test-state")) {
         int rc = mc2::RunCareerStateMachineTests();
@@ -281,10 +285,14 @@ void Mc3MainLoopPadProbe(X86Context& ctx, uint8_t* base) {
         last_movie = movie;
     }
 
+#ifdef _WIN32
     auto down = [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; };
     uint32_t current = 0;
     if (down(VK_SPACE)) current |= 0x800;                // Start
     if (down(VK_RETURN) || down('Z')) current |= 0x40;  // A
+#else
+    uint32_t current = 0;
+#endif
     if (g_live_ui_state && g_live_ui_state->frame_counter <= g_live_ui_state->automation_until_frame) {
         if (g_live_ui_state->automation_buttons & (1u << 4)) current |= 0x800;
         if (g_live_ui_state->automation_a) current |= 0x40;

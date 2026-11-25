@@ -15,6 +15,7 @@
 // the lighting, default 1), MC3_MC2_LOD (metres to LOD 1, default 150), MC3_MC2_ALWAYS=1 (Los Angeles in place of any
 // city), MC3_MC2_TELEPORT (F6, see Teleport), MC3_MC2_TRACE (logs every file opened).
 
+#ifdef _WIN32
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -2197,3 +2198,21 @@ X86_FUNC(sub_00277EE0) {
     }
     __imp__sub_00277EE0(ctx, base);
 }
+#else
+#include "cpu/x86_context.h"
+#include <cstdint>
+bool Mc2CareerSkipEventObject(X86Context&, uint8_t*) { return false; }
+void Mc2LaRegister(X86Context&, uint8_t*) {}
+void Mc2LaPaths(X86Context&, uint8_t*) {}
+bool Mc2CityDraw(X86Context&, uint8_t*) { return false; }
+bool Mc2CityHideList(X86Context&, uint8_t*) { return false; }
+void Mc2LaBound(X86Context&, uint8_t*) {}
+bool Mc2LaArcadeModulo(X86Context&, uint8_t*) { return false; }
+void Mc2LaArcadeWrap(X86Context&, uint8_t*) {}
+bool Mc2LaUnlocked(X86Context&, uint8_t*) { return false; }
+bool Mc2LaAudioBank(X86Context&, uint8_t*) { return false; }
+void Mc2LaAudioEntry(X86Context&, uint8_t*) {}
+bool Mc2LaCityName(X86Context&, uint8_t*) { return false; }
+void Mc2ApplyDebugBootArgs() {}
+bool Mc2CityFirstDrawReady() { return false; }
+#endif

@@ -19,8 +19,9 @@ void MarkMotionBlurTuneReady() {}
 
 namespace app {
 
+#ifndef MC3_HAS_RECOMPILED_GAME
 // Minimal kGame stub: no callbacks, no title, no assets.
-// Replace with the real game's GameInfo once game code is linked.
+// Replaced by src/common/game_info.cpp when recompiled game code is linked.
 const GameInfo kGame = {
     .title        = L"MC3 iOS",
     .short_title  = L"MC3",
@@ -42,6 +43,7 @@ const GameInfo kGame = {
     .rumble       = nullptr,  // no game rumble callback yet
     .transform    = nullptr,
 };
+#endif
 
 // Stub for functions referenced from app/app.h but not needed in ios-app yet
 Settings& Get() {

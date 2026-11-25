@@ -6,6 +6,7 @@
 #include "game/debug_tools.h"
 #include "kernel/kernel.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <dbghelp.h>
 #include <tlhelp32.h>
@@ -98,3 +99,7 @@ void Mc3WriteWatchStart(uint8_t* base) {
     if (HANDLE thread = CreateThread(nullptr, 0, ArmThreads, nullptr, 0, nullptr)) CloseHandle(thread);
     LOGE("MC3WATCH armed va=%08X host=%llX", g_watch_va, static_cast<unsigned long long>(g_watch_host));
 }
+#else
+#include <cstdint>
+void Mc3WriteWatchStart(uint8_t*) {}
+#endif

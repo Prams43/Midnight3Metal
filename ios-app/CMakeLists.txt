@@ -48,8 +48,29 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/xdk/dsound.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/xdk/xapi.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/xdk/xnet.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/recomp_stubs.cpp"
 )
+
+# Check if recompiled game sources exist in generated/game/ (produced locally or in CI from default.xbe)
+set(MC3_GEN_DIR "${CMAKE_CURRENT_LIST_DIR}/../generated/game")
+if(EXISTS "${MC3_GEN_DIR}/x86_func_mapping.cpp")
+    message(STATUS "MC3 iOS: Using recompiled game code from ${MC3_GEN_DIR}")
+    file(GLOB MC3_GEN_SOURCES CONFIGURE_DEPENDS "${MC3_GEN_DIR}/x86_recomp.*.cpp")
+    list(APPEND MC3_GEN_SOURCES "${MC3_GEN_DIR}/x86_func_mapping.cpp")
+    file(GLOB MC3_GAME_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_LIST_DIR}/../src/game/*.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/../src/common/*.cpp"
+    )
+    set_source_files_properties(${MC3_GEN_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-O2;-fno-strict-aliasing;-Wno-unused-label;-Wno-parentheses-equality;-Wno-unused-variable"
+    )
+    target_sources(MC3iOSApp PRIVATE ${MC3_GEN_SOURCES} ${MC3_GAME_SOURCES})
+    target_compile_definitions(MC3iOSApp PRIVATE MC3_HAS_RECOMPILED_GAME)
+    target_include_directories(MC3iOSApp BEFORE PRIVATE "${MC3_GEN_DIR}")
+    target_include_directories(MC3iOSApp PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../src")
+else()
+    message(STATUS "MC3 iOS: No generated/game found — building stub mode")
+    target_sources(MC3iOSApp PRIVATE "${CMAKE_CURRENT_LIST_DIR}/recomp_stubs.cpp")
+endif()
 
 # Include directories for runtime headers
 target_include_directories(MC3iOSApp PRIVATE

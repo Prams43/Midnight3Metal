@@ -15,7 +15,14 @@
 #include "gpu/render_profile.h"
 #include "kernel/memory.h"
 #include "xdk/d3d8.h"
+#if __has_include("headlight_anchors.h")
 #include "headlight_anchors.h"
+#else
+namespace mc3::headlights {
+struct Anchor { std::string_view model; float x, y, z; };
+inline const Anchor* Find(std::string_view) { return nullptr; }
+}  // namespace mc3::headlights
+#endif
 
 namespace {
 
