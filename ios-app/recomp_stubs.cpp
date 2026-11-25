@@ -7,7 +7,8 @@
 // if the stubs are still present (0 entry) Boot() will LOGE and return false.
 
 #include <cstdint>
-#include "cpu/x86_context.h"
+#include "cpu/x86_ops.h"
+#include "xdk/hle.h"
 
 // Recompiler outputs these in the generated <image>.cpp:
 //   extern const X86FuncMapping X86FuncMappings[];  // null-terminated
@@ -30,3 +31,9 @@ extern "C" const uint32_t X86ImageEnd   = 0x00010000u;
 // Stub: entry point 0 — Boot() will reject any XBE that does not match.
 extern "C" const uint32_t X86EntryPoint  = 0x00000000u;
 extern "C" const uint32_t X86KernelThunk = 0x00000000u;
+
+// Stub original guest implementations referenced via GUEST_ORIG()
+X86_FUNC(GUEST_ORIG(BinkGetSummary))   { (void)ctx; (void)base; }
+X86_FUNC(GUEST_ORIG(BinkDoFrame))      { (void)ctx; (void)base; }
+X86_FUNC(GUEST_ORIG(BinkNextFrame))    { (void)ctx; (void)base; }
+X86_FUNC(GUEST_ORIG(XLaunchNewImageA)) { (void)ctx; (void)base; }

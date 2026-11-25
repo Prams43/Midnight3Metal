@@ -164,7 +164,7 @@ void Spawn(std::function<void()> fn) {
         delete f;
     }
 #endif
-عا}
+}
 
 }  // namespace
 
