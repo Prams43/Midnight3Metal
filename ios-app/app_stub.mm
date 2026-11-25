@@ -2,6 +2,12 @@
 // The full implementations live in the game binary (app/, etc).
 // These stubs satisfy the linker for input.cpp, which calls app::kGame.pad / rumble.
 #include "app/app.h"
+#include "kernel/kernel.h"
+
+namespace kernel {
+// Defined in boot.cpp; stubbed here until boot.cpp is linked into ios-app.
+uint8_t* g_base = nullptr;
+}  // namespace kernel
 
 namespace app {
 

@@ -6,6 +6,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/metal.h"
+#include "kernel/kernel.h"
 #include "kernel/memory.h"
 #import <QuartzCore/CAMetalLayer.h>
 #include <atomic>
@@ -75,6 +76,7 @@ static void OverlayLogLine(const char* line) {
     // Initialize and smoke-test portable guest memory (4 GiB virtual + shared physical alias)
     if (mem::Init()) {
         uint8_t* base = mem::Base();
+        kernel::g_base = base;
         const uint32_t va = mem::AllocContiguous(4096, 0, mem::PhysicalSize() - 1, 4096);
         bool aliasOk = false;
         if (va) {
