@@ -94,7 +94,13 @@ jobs:
             -DMC3_IOS_TARGET=ios-app
 
       - name: Build iOS app executable
-        run: cmake --build build-ios-app --target MC3iOSApp --config Release 2>&1 | tail -100
+        run: |
+          set -o pipefail
+          if ! cmake --build build-ios-app --target MC3iOSApp --config Release 2>&1 | tee build.log | tail -120; then
+            echo "=== COMPILER ERRORS ==="
+            grep -E "error:|fatal error:" build.log | head -50 || true
+            exit 1
+          fi
 
       - name: Verify built app structure
         run: |

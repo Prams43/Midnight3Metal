@@ -108,6 +108,7 @@ struct Mc3LiveUiState {
 
 static Mc3LiveUiState* g_live_ui_state = nullptr;
 
+#ifdef _WIN32
 void InitLiveUiState() {
     if (g_live_ui_state) return;
     HANDLE hMap = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Mc3LiveUiState), "Local\\MC3_GAME_STATE");
@@ -244,6 +245,10 @@ static void UpdateLiveUiState(uint32_t state, uint8_t* base, uint32_t current_pa
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
+#else
+void InitLiveUiState() {}
+static void UpdateLiveUiState(uint32_t, uint8_t*, uint32_t) {}
+#endif
 
 void Mc3Pad(int port, input::Pad& pad) {
     if (port == 0) {
