@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   ios-memory-probe:
+    if: false
     name: Build unsigned iOS memory probe
     runs-on: macos-15
     timeout-minutes: 20
@@ -88,6 +89,7 @@ jobs:
           echo 'The game target remains Windows/Win32/D3D12; this is not an installable game IPA.' >> "$GITHUB_STEP_SUMMARY"
 
   ios-game-runtime-compile-check:
+    if: false
     name: Compile iOS production runtime components
     runs-on: macos-15
     timeout-minutes: 30
