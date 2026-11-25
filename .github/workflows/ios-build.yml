@@ -156,6 +156,14 @@ jobs:
             exit 0
           fi
           mkdir -p assets
+          # Support standard Google Drive share URLs automatically
+          if echo "$URL" | grep -qE 'drive\.google\.com/file/d/'; then
+            GDRIVE_ID=$(echo "$URL" | sed -nE 's|.*drive\.google\.com/file/d/([^/?#]+).*|\1|p')
+            URL="https://drive.usercontent.google.com/download?id=${GDRIVE_ID}&export=download&confirm=t"
+          elif echo "$URL" | grep -qE 'drive\.google\.com.*[?&]id='; then
+            GDRIVE_ID=$(echo "$URL" | sed -nE 's|.*[?&]id=([^&]+).*|\1|p')
+            URL="https://drive.usercontent.google.com/download?id=${GDRIVE_ID}&export=download&confirm=t"
+          fi
           curl -fSL "$URL" -o assets/default.xbe
           ACTUAL_SHA1=$(shasum -a 1 assets/default.xbe | awk '{print $1}')
           EXPECTED_SHA1="5bca1cf092edaadf876e8f80129900407a4a07b8"
