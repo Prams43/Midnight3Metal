@@ -80,6 +80,7 @@ static bool InPhysical(uint32_t va) {
 }
 
 bool Init() {
+    if (g_base) return true;
     const uint64_t size = 1ull << 32;
     const uint32_t kPhysicalSize = g_physical;  // the views below map what SetPhysicalSize chose
 #ifdef _WIN32

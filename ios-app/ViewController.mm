@@ -4,6 +4,7 @@
 #include "audio/audio.h"
 #include "core/input.h"
 #include "core/log.h"
+#include "cpu/x86_context.h"
 #include "gpu/backend.h"
 #include "gpu/metal.h"
 #include "kernel/kernel.h"
@@ -137,7 +138,8 @@ static void OverlayLogLine(const char* line) {
                                       withIntermediateDirectories:YES attributes:nil error:nil];
             bool booted = kernel::Boot(std::move(xbeBytes), "default.xbe", gameDir, dataDir);
             _gameBooted = booted ? YES : NO;
-            [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s", booted ? "OK" : "FAILED (stub/mismatch)"]];
+            [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s (ep=0x%08X)",
+                                  booted ? "OK" : "FAILED", X86EntryPoint]];
         }
     } else {
         [MC3DebugOverlay log:@"[BOOT] No default.xbe (stub mode, showing test triangle)"];
