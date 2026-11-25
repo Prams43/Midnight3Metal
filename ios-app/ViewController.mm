@@ -183,7 +183,7 @@ static void OverlayLogLine(const char* line) {
         gpu::State clearState;
         _gpuBackend->Clear(clearState, 0, nullptr, gpu::kClearTarget, 0xFF0A1020u, 1.0f, 0);
         if (_testState) {
-            _gpuBackend->Draw(*_testState, 4 /* D3DPT_TRIANGLELIST */, 0, 1, nullptr);
+            _gpuBackend->Draw(*_testState, 5 /* Xbox D3DPT_TRIANGLELIST */, 0, 3, nullptr);
         }
         gpu::Surface front{};
         _gpuBackend->Present(front);
