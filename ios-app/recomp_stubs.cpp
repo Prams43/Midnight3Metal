@@ -17,20 +17,20 @@
 //   extern const uint32_t X86EntryPoint, X86KernelThunk;
 
 // Stub: empty function table (single null sentinel)
-extern "C" const X86FuncMapping X86FuncMappings[] = { {0, nullptr} };
+extern const X86FuncMapping X86FuncMappings[] = { {0, nullptr} };
 
 // Stub: empty continuation list
-extern "C" const uint32_t X86Continuations[] = { 0 };
+extern const uint32_t X86Continuations[] = { 0 };
 
 // Stub: code range covers nothing (lo == hi means nothing to dispatch)
-extern "C" const uint32_t X86CodeBase   = 0x00010000u;
-extern "C" const uint32_t X86CodeEnd    = 0x00010000u;
-extern "C" const uint32_t X86ImageBase  = 0x00010000u;
-extern "C" const uint32_t X86ImageEnd   = 0x00010000u;
+extern const uint32_t X86CodeBase   = 0x00010000u;
+extern const uint32_t X86CodeEnd    = 0x00010000u;
+extern const uint32_t X86ImageBase  = 0x00010000u;
+extern const uint32_t X86ImageEnd   = 0x00010000u;
 
 // Stub: entry point 0 — Boot() will reject any XBE that does not match.
-extern "C" const uint32_t X86EntryPoint  = 0x00000000u;
-extern "C" const uint32_t X86KernelThunk = 0x00000000u;
+extern const uint32_t X86EntryPoint  = 0x00000000u;
+extern const uint32_t X86KernelThunk = 0x00000000u;
 
 // Stub original guest implementations referenced via GUEST_ORIG()
 X86_FUNC(GUEST_ORIG(BinkGetSummary))   { (void)ctx; (void)base; }
