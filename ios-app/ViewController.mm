@@ -13,8 +13,19 @@
 #include <atomic>
 #include <cstring>
 #include <memory>
+#include <cstdlib>
 
 static std::atomic<uint64_t> g_audioFrames{0};
+
+// UIView subclass that uses CAMetalLayer as its backing layer.
+// This is the correct way to get a Metal-backed view on iOS: override +layerClass
+// on the actual view class so UIKit uses it from the start, rather than adding
+// a sublayer (sublayers don't get automatic compositing by the window server).
+@interface MetalView : UIView
+@end
+@implementation MetalView
++ (Class)layerClass { return [CAMetalLayer class]; }
+@end
 
 // Bridge: redirect logx::Write output to the on-screen debug overlay.
 // Called from a C-linkage shim installed at app startup.
@@ -45,18 +56,10 @@ static void OverlayLogLine(const char* line) {
 }
 
 - (void)loadView {
-    // Create view with explicit CAMetalLayer backing
-    // +layerClass only works for UIView subclasses, not runtime instances
-    UIView* metalView = [[UIView alloc] initWithFrame:[UIScreen mainScreen].bounds];
-
-    // Replace default CALayer with CAMetalLayer
-    CAMetalLayer* metalLayer = [CAMetalLayer layer];
-    metalLayer.frame = metalView.bounds;
-    metalLayer.contentsScale = [UIScreen mainScreen].scale;
-
-    // Remove default layer and set metal layer as backing
-    [metalView.layer addSublayer:metalLayer];
-
+    // Create MetalView whose backing layer IS a CAMetalLayer.
+    // MetalView overrides +layerClass so UIKit makes the layer for us.
+    MetalView* metalView = [[MetalView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    metalView.contentScaleFactor = [UIScreen mainScreen].scale;
     self.view = metalView;
 }
 
@@ -105,15 +108,22 @@ static void OverlayLogLine(const char* line) {
     });
     [MC3DebugOverlay log:@"[AUDIO] AudioQueue started"];
 
-    // Initialize Metal layer first so d3d8's CreateBackend() can use it if kernel::Boot() succeeds
+    // Initialize Metal layer first so d3d8's CreateBackend() can use it if kernel::Boot() succeeds.
+    // The view's own layer IS the CAMetalLayer (MetalView overrides +layerClass).
     CAMetalLayer* metalLayer = nil;
-    for (CALayer* layer in self.view.layer.sublayers) {
-        if ([layer isKindOfClass:[CAMetalLayer class]]) {
-            metalLayer = (CAMetalLayer*)layer;
-            break;
+    if ([self.view.layer isKindOfClass:[CAMetalLayer class]]) {
+        metalLayer = (CAMetalLayer*)self.view.layer;
+    } else {
+        // Fallback: check sublayers (old code path)
+        for (CALayer* layer in self.view.layer.sublayers) {
+            if ([layer isKindOfClass:[CAMetalLayer class]]) {
+                metalLayer = (CAMetalLayer*)layer;
+                break;
+            }
         }
     }
     if (metalLayer) {
+        metalLayer.contentsScale = [UIScreen mainScreen].scale;
         gpu::SetMetalLayer((__bridge void*)metalLayer);
     } else {
         LOGE("MC3 iOS Host: CAMetalLayer not found in view");
@@ -122,6 +132,13 @@ static void OverlayLogLine(const char* line) {
     // Check if default.xbe is present in Documents/ or app bundle
     NSArray<NSString*>* docPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString* docsDir = docPaths.firstObject ?: tmpDir;
+
+    // Set environment variables for iOS before boot so game code can read them.
+    // Skip MC2 intro movies (no BIK decode on iOS → black screen otherwise).
+    setenv("MC3_SKIP_MC2_MOVIES", "1", 1);
+    // Point MC2 career save to the app's Documents folder.
+    setenv("MC3_MC2_SAVE_PATH", [[docsDir stringByAppendingPathComponent:@"mc2_career_progress.dat"] UTF8String], 1);
+
     NSString* xbeInDocs = [docsDir stringByAppendingPathComponent:@"default.xbe"];
     NSString* xbeInBundle = [[NSBundle mainBundle] pathForResource:@"default" ofType:@"xbe"];
     NSString* xbePath = [[NSFileManager defaultManager] fileExistsAtPath:xbeInDocs] ? xbeInDocs
@@ -252,12 +269,17 @@ static void OverlayLogLine(const char* line) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
 
-    // Find and update Metal layer drawable size
+    // Find and update Metal layer drawable size.
+    // The view's own layer IS the CAMetalLayer when using MetalView.
     CAMetalLayer* metalLayer = nil;
-    for (CALayer* layer in self.view.layer.sublayers) {
-        if ([layer isKindOfClass:[CAMetalLayer class]]) {
-            metalLayer = (CAMetalLayer*)layer;
-            break;
+    if ([self.view.layer isKindOfClass:[CAMetalLayer class]]) {
+        metalLayer = (CAMetalLayer*)self.view.layer;
+    } else {
+        for (CALayer* layer in self.view.layer.sublayers) {
+            if ([layer isKindOfClass:[CAMetalLayer class]]) {
+                metalLayer = (CAMetalLayer*)layer;
+                break;
+            }
         }
     }
 

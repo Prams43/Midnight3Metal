@@ -102,6 +102,13 @@ std::string ResolveMoviePath(std::string_view pss_or_bik_key) {
 bool PlayCareerMovie(X86Context& ctx, uint8_t* base, const char* movie_key) {
     if (!movie_key || !movie_key[0]) return false;
 
+    // On iOS (or any host without MC2 video files) skip movies immediately so
+    // the career bridge can advance past the intro and reach actual gameplay.
+    if (std::getenv("MC3_SKIP_MC2_MOVIES")) {
+        LOGE("MC2 Career AV: skipping movie '%s' (MC3_SKIP_MC2_MOVIES set)", movie_key);
+        return false;
+    }
+
     std::string resolved = ResolveMoviePath(movie_key);
     if (resolved.empty()) {
         LOGE("MC2 Career AV: movie key='%s' not found on disk (open failure)", movie_key);

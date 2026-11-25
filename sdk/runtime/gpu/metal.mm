@@ -389,13 +389,6 @@ public:
         }
 
         const MTLPrimitiveType mtl_prim = ToMetalPrimitive(a.topology, a.strip);
-        static int s_draw_logs = 0;
-        if (s_draw_logs < 5) {
-            s_draw_logs++;
-            LOGE("metal: Draw#%d verts=%u draw=%u idx=%u idx16=%d indices_vec=%zu baseV=%d trans=%d pso=%d",
-                 s_draw_logs, a.vertex_count, a.draw_count, a.index_count, a.index16 ? 1 : 0,
-                 a.indices.size(), a.base_vertex, use_translated ? 1 : 0, pso ? 1 : 0);
-        }
         if (a.index_count > 0 && !a.indices.empty()) {
             const uint32_t* idx_ptr = a.indices.data();
             std::vector<uint32_t> biased32;
@@ -473,12 +466,6 @@ public:
     void Present(const Surface&) override {
         if (!layer_ || !queue_) return;
         if (!encoder_ && has_clear_) EnsureEncoder();
-        static int s_pres_logs = 0;
-        if (s_pres_logs < 3) {
-            s_pres_logs++;
-            LOGE("metal: Present#%d enc=%d cmd=%d draw=%d clear=%d",
-                 s_pres_logs, encoder_ ? 1 : 0, cmd_buf_ ? 1 : 0, drawable_ ? 1 : 0, has_clear_ ? 1 : 0);
-        }
         if (encoder_) {
             [encoder_ endEncoding];
             encoder_ = nil;
