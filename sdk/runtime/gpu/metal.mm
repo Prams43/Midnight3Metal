@@ -205,8 +205,9 @@ public:
 
     bool IsOffscreenTarget(const State& s) const {
         if (!s.rt.data) return false;
-        return (s.rt.width && s.rt.width != guest_width_) ||
-               (s.rt.height && s.rt.height != guest_height_);
+        uint32_t w = 0, h = 0;
+        SurfaceSize(s.rt, w, h);
+        return (w && w != guest_width_) || (h && h != guest_height_);
     }
 
     void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
