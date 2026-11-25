@@ -19,7 +19,6 @@ add_executable(MC3iOSApp MACOSX_BUNDLE
     "${CMAKE_CURRENT_LIST_DIR}/main.mm"
     "${CMAKE_CURRENT_LIST_DIR}/AppDelegate.mm"
     "${CMAKE_CURRENT_LIST_DIR}/ViewController.mm"
-    "${CMAKE_CURRENT_LIST_DIR}/MetalRenderer.mm"
     "${CMAKE_CURRENT_LIST_DIR}/app_stub.mm"
     "${CMAKE_CURRENT_LIST_DIR}/MC3DebugOverlay.mm"
     "${CMAKE_CURRENT_LIST_DIR}/../sdk/runtime/core/input.cpp"
