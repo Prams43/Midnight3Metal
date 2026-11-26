@@ -204,7 +204,7 @@ public:
     }
 
     bool IsOffscreenTarget(const State& s) const {
-        if (!s.rt.data) return false;
+        if (!s.rt.header) return false;
         uint32_t w = 0, h = 0;
         SurfaceSize(s.rt, w, h);
         return (w && w != guest_width_) || (h && h != guest_height_);
