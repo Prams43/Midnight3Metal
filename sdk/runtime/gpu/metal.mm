@@ -482,7 +482,7 @@ public:
         const uint32_t dst_b = s.simple[kMDestBlend / 4];
         const uint32_t blend_op = s.simple[kMBlendOp / 4];
         const uint32_t cw_raw = s.simple[kMColorWriteEnable / 4];
-        const MTLColorWriteMask write_mask = s.SimpleSet(kMColorWriteEnable / 4)
+        const MTLColorWriteMask write_mask = s.rt.header
             ? ToMetalWriteMask(cw_raw)
             : MTLColorWriteMaskAll;
         id<MTLRenderPipelineState> pso = GetPipeline(vs_hash, ps_hash, active_vs, active_fs,
