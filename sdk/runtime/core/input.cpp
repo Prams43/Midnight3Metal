@@ -35,6 +35,8 @@ bool g_sdl = false;
 SDL_Gamepad* g_pads[4] = {};
 std::atomic<bool> g_virtual_keys[SDL_SCANCODE_COUNT] = {};
 std::atomic<bool> g_virtual_controls[static_cast<size_t>(VirtualControl::Count)] = {};
+std::atomic<int16_t> g_virtual_lx{0};
+std::atomic<int16_t> g_virtual_ly{0};
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -95,10 +97,14 @@ void MergeVirtualControls(Pad& p) {
     const bool face_y = down(SDL_SCANCODE_V) || VirtualControlDown(VirtualControl::FaceY);
     const bool shoulder_l = down(SDL_SCANCODE_Q) || VirtualControlDown(VirtualControl::ShoulderL);
     const bool shoulder_r = down(SDL_SCANCODE_E) || VirtualControlDown(VirtualControl::ShoulderR);
+    const bool trigger_l = VirtualControlDown(VirtualControl::TriggerL);
+    const bool trigger_r = VirtualControlDown(VirtualControl::TriggerR);
     const bool accelerate = down(SDL_SCANCODE_W) || VirtualControlDown(VirtualControl::Accelerate);
     const bool brake = down(SDL_SCANCODE_S) || VirtualControlDown(VirtualControl::Brake);
     const bool steer_right = down(SDL_SCANCODE_D) || VirtualControlDown(VirtualControl::SteerRight);
     const bool steer_left = down(SDL_SCANCODE_A) || VirtualControlDown(VirtualControl::SteerLeft);
+    const int16_t stick_x = g_virtual_lx.load(std::memory_order_relaxed);
+    const int16_t stick_y = g_virtual_ly.load(std::memory_order_relaxed);
     // Virtual input is exposed only on port 0.
 #if defined(__APPLE__) && TARGET_OS_IPHONE
     // On iOS there is no keyboard fallback, so keep port 0 permanently connected
@@ -107,25 +113,32 @@ void MergeVirtualControls(Pad& p) {
     p.connected = true;
 #endif
     const bool active = dpad_up || dpad_down || dpad_left || dpad_right || confirm || back || start || face_a || face_b ||
-                        face_x || face_y || shoulder_l || shoulder_r || accelerate || brake || steer_left || steer_right;
+                        face_x || face_y || shoulder_l || shoulder_r || trigger_l || trigger_r ||
+                        accelerate || brake || steer_left || steer_right || stick_x != 0 || stick_y != 0;
     if (!active) return; // A touch press makes the synthesized controller available for this poll.
     p.connected = true;
     p.buttons |= uint16_t(dpad_up) << 0;
     p.buttons |= uint16_t(dpad_down) << 1;
     p.buttons |= uint16_t(dpad_left) << 2;
     p.buttons |= uint16_t(dpad_right) << 3;
-    // Report bit 4 is Start and bit 5 is Back; A/B are analog-button slots.
+    // Report bit 4 is Start and bit 5 is Back; A/B/X/Y/Black/White/LTrig/RTrig are analog-button slots.
     p.buttons |= uint16_t(start) << 4;
     p.buttons |= uint16_t(back) << 5;
     if (face_a || confirm) p.analog[0] = 0xFF;
-    if (face_b || back) p.analog[1] = 0xFF; // Keep menu back usable in-game as Xbox B.
+    if (face_b) p.analog[1] = 0xFF;
     if (face_x) p.analog[2] = 0xFF;
     if (face_y) p.analog[3] = 0xFF;
-    if (shoulder_l) p.analog[4] = 0xFF;
-    if (shoulder_r) p.analog[5] = 0xFF;
-    // D-pad is digital navigation only; driving axes come from steering/throttle controls.
-    if (steer_right != steer_left) p.lx = steer_right ? 32767 : -32768;
-    if (accelerate != brake) p.ly = accelerate ? 32767 : -32768;
+    // Xbox analog[4] = Black (R1 / Right Shoulder), analog[5] = White (L1 / Left Shoulder),
+    // analog[6] = Left Trigger (L2 / Brake), analog[7] = Right Trigger (R2 / Gas).
+    if (shoulder_r) p.analog[4] = 0xFF;
+    if (shoulder_l) p.analog[5] = 0xFF;
+    if (trigger_l) p.analog[6] = 0xFF;
+    if (trigger_r) p.analog[7] = 0xFF;
+    // Left analog stick: virtual thumbstick takes precedence over digital steering/throttle keys.
+    if (stick_x != 0) p.lx = stick_x;
+    else if (steer_right != steer_left) p.lx = steer_right ? 32767 : -32768;
+    if (stick_y != 0) p.ly = stick_y;
+    else if (accelerate != brake) p.ly = accelerate ? 32767 : -32768;
 }
 #ifdef _WIN32
 static std::atomic<bool> g_key_state[256] = {};
@@ -234,11 +247,22 @@ void SetVirtualControl(VirtualControl control, bool down) {
         "Confirm", "MenuBack", "Start",
         "FaceA", "FaceB", "FaceX", "FaceY",
         "ShoulderL", "ShoulderR",
+        "TriggerL", "TriggerR",
         "Accelerate", "Brake", "SteerLeft", "SteerRight"
     };
     const char* name = index < std::size(kControlNames) ? kControlNames[index] : "Unknown";
     LOGD("input: SetVirtualControl %s %s", name, down ? "DOWN" : "UP");
 #endif
+}
+
+void SetVirtualLeftStick(float x, float y) {
+    auto to_axis = [](float v) -> int16_t {
+        if (v < -1.0f) v = -1.0f;
+        if (v > 1.0f) v = 1.0f;
+        return static_cast<int16_t>(v < 0.0f ? v * 32768.0f : v * 32767.0f);
+    };
+    g_virtual_lx.store(to_axis(x), std::memory_order_relaxed);
+    g_virtual_ly.store(to_axis(y), std::memory_order_relaxed);
 }
 
 Pad Poll(int port) {

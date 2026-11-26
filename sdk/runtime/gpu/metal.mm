@@ -26,15 +26,7 @@ namespace {
 CAMetalLayer* g_metal_layer = nil;
 
 struct MetalVertex {
-    float pos[4];     // v0
-    float weight[4];  // v1
-    float norm[4];    // v2
-    float col[4];     // v3
-    float spec[4];    // v4
-    float uv0[4];     // v9
-    float uv1[4];     // v10
-    float uv2[4];     // v11
-    float uv3[4];     // v12
+    float v[16][4];
 };
 
 static const char* kMetalPassthroughShader = R"(
@@ -97,6 +89,15 @@ fragment float4 blit_fs_rgba(BlitOut in [[stage_in]],
                              texture2d<float> tex [[texture(0)]],
                              sampler smp [[sampler(0)]]) {
     return tex.sample(smp, in.uv);
+}
+
+vertex float4 clear_vs(uint vid [[vertex_id]], constant float& depth_z [[buffer(0)]]) {
+    float2 pos[3] = { float2(-1.0f, -1.0f), float2(3.0f, -1.0f), float2(-1.0f, 3.0f) };
+    return float4(pos[vid], depth_z, 1.0f);
+}
+
+fragment float4 clear_fs(constant float4& col [[buffer(0)]]) {
+    return col;
 }
 )";
 
@@ -224,21 +225,11 @@ public:
         }
 
         MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
-        auto set_attr = [&](NSUInteger idx, size_t off) {
+        for (NSUInteger idx = 0; idx < 16; ++idx) {
             vd.attributes[idx].format = MTLVertexFormatFloat4;
-            vd.attributes[idx].offset = off;
+            vd.attributes[idx].offset = idx * sizeof(float) * 4;
             vd.attributes[idx].bufferIndex = 0;
-        };
-        set_attr(0, offsetof(MetalVertex, pos));
-        set_attr(1, offsetof(MetalVertex, weight));
-        set_attr(2, offsetof(MetalVertex, norm));
-        set_attr(3, offsetof(MetalVertex, col));
-        set_attr(4, offsetof(MetalVertex, spec));
-        set_attr(9, offsetof(MetalVertex, uv0));
-        set_attr(10, offsetof(MetalVertex, uv1));
-        set_attr(11, offsetof(MetalVertex, uv2));
-        set_attr(12, offsetof(MetalVertex, uv3));
-
+        }
         vd.layouts[0].stride = sizeof(MetalVertex);
         vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
@@ -249,7 +240,7 @@ public:
         pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0, 0, MTLColorWriteMaskAll);
         if (!pipeline_) return false;
 
-        // Fullscreen blit pipelines for Present (opaque RGB) and RT-to-RT Copy (preserve RGBA)
+        // Fullscreen blit and masked/sub-rect clear pipelines
         id<MTLLibrary> blitLib = [device_ newLibraryWithSource:@(kMetalBlitShader) options:nil error:&err];
         if (!blitLib) {
             LOGE("metal: blit shader compile failed: %s", [[err localizedDescription] UTF8String]);
@@ -258,6 +249,8 @@ public:
         id<MTLFunction> blitVs = [blitLib newFunctionWithName:@"blit_vs"];
         id<MTLFunction> blitFsOpaque = [blitLib newFunctionWithName:@"blit_fs_opaque"];
         id<MTLFunction> blitFsRgba = [blitLib newFunctionWithName:@"blit_fs_rgba"];
+        clear_vs_ = [blitLib newFunctionWithName:@"clear_vs"];
+        clear_fs_ = [blitLib newFunctionWithName:@"clear_fs"];
         if (blitVs && blitFsOpaque && blitFsRgba) {
             MTLRenderPipelineDescriptor* bd = [[MTLRenderPipelineDescriptor alloc] init];
             bd.vertexFunction = blitVs;
@@ -301,36 +294,147 @@ public:
         return Format((s.format >> 8) & 0xFF).depth;
     }
 
-    void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
-        const bool clear_c = (flags & kClearTarget) != 0;
+    void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z, uint32_t) override {
+        const uint32_t mask = (flags & kClearTarget) >> 4;  // bit 0=R, 1=G, 2=B, 3=A
+        const bool clear_c = (mask != 0) && !IsDepthSurface(s.rt);
         const bool clear_z = (flags & kClearZ) != 0;
         if (!clear_c && !clear_z) return;
         @autoreleasepool {
             const uint32_t rt_va = s.rt.header ? mem::VirtualFromPhysical(s.rt.data) : 0u;
+            const uint32_t zs_va = s.zs.header ? mem::VirtualFromPhysical(s.zs.data) : rt_va;
             uint32_t w = 0, h = 0;
             if (s.rt.header) SurfaceSize(s.rt, w, h);
             else if (s.zs.header) SurfaceSize(s.zs, w, h);
             if (!w) w = guest_width_;
             if (!h) h = guest_height_;
 
-            if (clear_c && !IsDepthSurface(s.rt)) {
-                auto& ct = EnsureColorTarget(rt_va, w, h);
-                const double a = ((color >> 24) & 0xFF) / 255.0;
-                const double r = ((color >> 16) & 0xFF) / 255.0;
-                const double g = ((color >> 8) & 0xFF) / 255.0;
-                const double b = (color & 0xFF) / 255.0;
-                ct.clear_color = MTLClearColorMake(r, g, b, a);
-                ct.pending_clear = true;
-                ct.drawn = true;
-                last_rt_va_ = rt_va;
-                if (encoder_ && active_color_tex_ == ct.tex) EndEncoder();
+            std::vector<MTLScissorRect> rs;
+            auto add_rect = [&](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+                const int32_t cx0 = std::clamp<int32_t>(x0, 0, int32_t(w));
+                const int32_t cy0 = std::clamp<int32_t>(y0, 0, int32_t(h));
+                const int32_t cx1 = std::clamp<int32_t>(x1, 0, int32_t(w));
+                const int32_t cy1 = std::clamp<int32_t>(y1, 0, int32_t(h));
+                if (cx1 > cx0 && cy1 > cy0) {
+                    rs.push_back(MTLScissorRect{
+                        NSUInteger(cx0), NSUInteger(cy0),
+                        NSUInteger(cx1 - cx0), NSUInteger(cy1 - cy0)
+                    });
+                }
+            };
+            if (count > 0 && rects != nullptr) {
+                for (uint32_t i = 0; i < count; ++i) {
+                    int32_t r[4];
+                    std::memcpy(r, rects + size_t(i) * sizeof(r), sizeof(r));
+                    add_rect(r[0], r[1], r[2], r[3]);
+                }
+            } else if (s.viewport.w && s.viewport.h) {
+                add_rect(int32_t(s.viewport.x), int32_t(s.viewport.y),
+                         int32_t(s.viewport.x + s.viewport.w), int32_t(s.viewport.y + s.viewport.h));
+            } else {
+                add_rect(0, 0, int32_t(w), int32_t(h));
             }
-            if (clear_z) {
-                const uint32_t zs_va = s.zs.header ? mem::VirtualFromPhysical(s.zs.data) : rt_va;
+            if (rs.empty()) return;
+
+            const bool full_rect = (rs.size() == 1 && rs[0].x == 0 && rs[0].y == 0 &&
+                                    rs[0].width == w && rs[0].height == h);
+            const float r_f = ((color >> 16) & 0xFF) / 255.0f;
+            const float g_f = ((color >> 8) & 0xFF) / 255.0f;
+            const float b_f = (color & 0xFF) / 255.0f;
+            const float a_f = ((color >> 24) & 0xFF) / 255.0f;
+            const float depth_z = std::clamp(z, 0.0f, 1.0f);
+            bool handled_z = false;
+
+            if (clear_c) {
+                auto& ct = EnsureColorTarget(rt_va, w, h);
+                if (full_rect && mask == 0xF) {
+                    ct.clear_color = MTLClearColorMake(r_f, g_f, b_f, a_f);
+                    ct.pending_clear = true;
+                    ct.drawn = true;
+                    last_rt_va_ = rt_va;
+                    if (encoder_ && active_color_tex_ == ct.tex) EndEncoder();
+                } else {
+                    // Masked channel clear (e.g. MC3 minimap alpha-only 0x80) or sub-rect clear:
+                    // preserve existing contents outside the mask/rects instead of wiping the whole screen!
+                    if (ct.pending_clear) FlushColorClear(ct);
+                    const bool also_z = clear_z && !full_rect;
+                    id<MTLRenderPipelineState> pso = GetClearPipeline(mask, also_z);
+                    if (pso && ct.tex) {
+                        EndEncoder();
+                        if (EnsureCommandBuffer()) {
+                            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+                            pass.colorAttachments[0].texture = ct.tex;
+                            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+                            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+                            if (also_z) {
+                                auto& dt = EnsureDepthTarget(zs_va, w, h);
+                                pass.depthAttachment.texture = dt.tex;
+                                pass.depthAttachment.loadAction = dt.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
+                                pass.depthAttachment.clearDepth = dt.clear_depth;
+                                pass.depthAttachment.storeAction = MTLStoreActionStore;
+                                dt.pending_clear = false;
+                            }
+                            id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:pass];
+                            if (enc) {
+                                [enc setRenderPipelineState:pso];
+                                if (also_z) {
+                                    id<MTLDepthStencilState> dss = GetDepthStencil(true, true, 8 /* ALWAYS */);
+                                    if (dss) [enc setDepthStencilState:dss];
+                                }
+                                float col4[4] = {r_f, g_f, b_f, a_f};
+                                [enc setVertexBytes:&depth_z length:sizeof(depth_z) atIndex:0];
+                                [enc setFragmentBytes:col4 length:sizeof(col4) atIndex:0];
+                                for (const auto& sc : rs) {
+                                    [enc setScissorRect:sc];
+                                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                                }
+                                [enc endEncoding];
+                            }
+                            ct.drawn = true;
+                            if (also_z) handled_z = true;
+                        }
+                    }
+                }
+            }
+
+            if (clear_z && !handled_z) {
                 auto& dt = EnsureDepthTarget(zs_va, w, h);
-                dt.clear_depth = double(z);
-                dt.pending_clear = true;
-                if (encoder_ && active_depth_tex_ == dt.tex) EndEncoder();
+                if (full_rect) {
+                    dt.clear_depth = double(depth_z);
+                    dt.pending_clear = true;
+                    if (encoder_ && active_depth_tex_ == dt.tex) EndEncoder();
+                } else {
+                    auto& ct = EnsureColorTarget(rt_va, w, h);
+                    if (ct.pending_clear) FlushColorClear(ct);
+                    id<MTLRenderPipelineState> pso = GetClearPipeline(0 /* no color writes */, true);
+                    if (pso && ct.tex && dt.tex) {
+                        EndEncoder();
+                        if (EnsureCommandBuffer()) {
+                            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+                            pass.colorAttachments[0].texture = ct.tex;
+                            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+                            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+                            pass.depthAttachment.texture = dt.tex;
+                            pass.depthAttachment.loadAction = dt.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
+                            pass.depthAttachment.clearDepth = dt.clear_depth;
+                            pass.depthAttachment.storeAction = MTLStoreActionStore;
+                            dt.pending_clear = false;
+                            id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:pass];
+                            if (enc) {
+                                [enc setRenderPipelineState:pso];
+                                id<MTLDepthStencilState> dss = GetDepthStencil(true, true, 8 /* ALWAYS */);
+                                if (dss) [enc setDepthStencilState:dss];
+                                float col4[4] = {0, 0, 0, 0};
+                                [enc setVertexBytes:&depth_z length:sizeof(depth_z) atIndex:0];
+                                [enc setFragmentBytes:col4 length:sizeof(col4) atIndex:0];
+                                for (const auto& sc : rs) {
+                                    [enc setScissorRect:sc];
+                                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                                }
+                                [enc endEncoding];
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -427,9 +531,8 @@ public:
             }
         }
 
-        // Determine active vertex registers supplied by our MetalVertex layout
-        constexpr uint16_t kSupportedRegs = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) |
-                                            (1u << 9) | (1u << 10) | (1u << 11) | (1u << 12);
+        // Determine active vertex registers supplied by our full 16-register MetalVertex layout
+        constexpr uint16_t kSupportedRegs = 0xFFFFu;
         const uint16_t supplied_regs = (a.regs & kSupportedRegs) | (1u << 0);
         const FixedKey fk = MakeFixedKey(s);
         uint64_t vs_hash = 0, ps_hash = 0;
@@ -483,60 +586,65 @@ public:
             if (!read_attr(0, i, p)) return;
             if (use_translated) {
                 // Translated HLSL->MSL vertex shaders expect raw guest positions (fixed or programmable)
-                verts[i].pos[0] = p[0];
-                verts[i].pos[1] = p[1];
-                verts[i].pos[2] = p[2];
-                verts[i].pos[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
+                verts[i].v[0][0] = p[0];
+                verts[i].v[0][1] = p[1];
+                verts[i].v[0][2] = p[2];
+                verts[i].v[0][3] = (p[3] != 0.0f) ? p[3] : 1.0f;
             } else if (a.pretransformed) {
-                verts[i].pos[0] = p[0] * inv_w - 1.0f;
-                verts[i].pos[1] = 1.0f - p[1] * inv_h;
-                verts[i].pos[2] = p[2];
-                verts[i].pos[3] = 1.0f;
+                verts[i].v[0][0] = p[0] * inv_w - 1.0f;
+                verts[i].v[0][1] = 1.0f - p[1] * inv_h;
+                verts[i].v[0][2] = p[2];
+                verts[i].v[0][3] = 1.0f;
             } else {
                 p[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
                 float wv[4], vv[4], pv[4];
                 MulMat4Vec4(s.transforms[256].data(), p, wv);
                 MulMat4Vec4(s.transforms[2].data(), wv, vv);
                 MulMat4Vec4(s.transforms[3].data(), vv, pv);
-                verts[i].pos[0] = pv[0];
-                verts[i].pos[1] = pv[1];
-                verts[i].pos[2] = pv[2];
-                verts[i].pos[3] = pv[3];
+                verts[i].v[0][0] = pv[0];
+                verts[i].v[0][1] = pv[1];
+                verts[i].v[0][2] = pv[2];
+                verts[i].v[0][3] = pv[3];
             }
 
-            if (!read_attr(1, i, verts[i].weight)) {
-                verts[i].weight[0] = verts[i].weight[1] = verts[i].weight[2] = 0.0f;
-                verts[i].weight[3] = 1.0f;
+            for (int r = 1; r < 16; ++r) {
+                if (!read_attr(r, i, verts[i].v[r])) {
+                    if (r == 3) {
+                        verts[i].v[r][0] = verts[i].v[r][1] = verts[i].v[r][2] = verts[i].v[r][3] = 1.0f;
+                    } else if (r == 2) {
+                        verts[i].v[r][0] = 0.0f;
+                        verts[i].v[r][1] = 0.0f;
+                        verts[i].v[r][2] = 1.0f;
+                        verts[i].v[r][3] = 0.0f;
+                    } else if (r == 4) {
+                        verts[i].v[r][0] = verts[i].v[r][1] = verts[i].v[r][2] = verts[i].v[r][3] = 0.0f;
+                    } else {
+                        verts[i].v[r][0] = 0.0f;
+                        verts[i].v[r][1] = 0.0f;
+                        verts[i].v[r][2] = 0.0f;
+                        verts[i].v[r][3] = 1.0f;
+                    }
+                }
             }
-            if (!read_attr(2, i, verts[i].norm)) {
-                verts[i].norm[0] = verts[i].norm[1] = 0.0f;
-                verts[i].norm[2] = 1.0f;
-                verts[i].norm[3] = 0.0f;
-            }
-            if (!read_attr(3, i, verts[i].col)) {
-                verts[i].col[0] = 1.0f;
-                verts[i].col[1] = 1.0f;
-                verts[i].col[2] = 1.0f;
-                verts[i].col[3] = 1.0f;
-            }
-            if (!read_attr(4, i, verts[i].spec)) {
-                verts[i].spec[0] = verts[i].spec[1] = verts[i].spec[2] = verts[i].spec[3] = 0.0f;
-            }
-
-            auto fill_uv = [&](int reg, float dst[4]) {
-                dst[0] = dst[1] = dst[2] = 0.0f;
-                dst[3] = 1.0f;
-                read_attr(reg, i, dst);
-            };
-            fill_uv(9, verts[i].uv0);
-            fill_uv(10, verts[i].uv1);
-            fill_uv(11, verts[i].uv2);
-            fill_uv(12, verts[i].uv3);
         }
 
         if (!EnsureEncoderFor(rt_va, zs_va, target_w, target_h)) return;
         color_rts_[rt_va].drawn = true;
         last_rt_va_ = rt_va;
+
+        if (s.scissor_count > 0) {
+            const int32_t sx0 = std::clamp<int32_t>(int32_t(s.scissors[0]), 0, int32_t(target_w));
+            const int32_t sy0 = std::clamp<int32_t>(int32_t(s.scissors[1]), 0, int32_t(target_h));
+            const int32_t sx1 = std::clamp<int32_t>(int32_t(s.scissors[2]), 0, int32_t(target_w));
+            const int32_t sy1 = std::clamp<int32_t>(int32_t(s.scissors[3]), 0, int32_t(target_h));
+            if (sx1 <= sx0 || sy1 <= sy0) return;
+            [encoder_ setScissorRect:MTLScissorRect{
+                NSUInteger(sx0), NSUInteger(sy0),
+                NSUInteger(sx1 - sx0), NSUInteger(sy1 - sy0)
+            }];
+        } else {
+            [encoder_ setScissorRect:MTLScissorRect{0, 0, target_w, target_h}];
+        }
 
         const bool blend_on = s.simple[kMBlendEnable / 4] != 0;
         const uint32_t src_b = s.simple[kMSrcBlend / 4];
@@ -999,6 +1107,31 @@ private:
         return pso;
     }
 
+    id<MTLRenderPipelineState> GetClearPipeline(uint32_t mask, bool with_depth) {
+        const uint32_t key = (mask & 0xFu) | (with_depth ? 0x10u : 0u);
+        if (auto it = clear_pso_cache_.find(key); it != clear_pso_cache_.end()) return it->second;
+        if (!clear_vs_ || !clear_fs_) return nil;
+        MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+        desc.vertexFunction = clear_vs_;
+        desc.fragmentFunction = clear_fs_;
+        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        MTLColorWriteMask wm = MTLColorWriteMaskNone;
+        if (mask & 1u) wm |= MTLColorWriteMaskRed;
+        if (mask & 2u) wm |= MTLColorWriteMaskGreen;
+        if (mask & 4u) wm |= MTLColorWriteMaskBlue;
+        if (mask & 8u) wm |= MTLColorWriteMaskAlpha;
+        desc.colorAttachments[0].writeMask = wm;
+        if (with_depth) desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+        NSError* err = nil;
+        id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
+        if (!pso) {
+            LOGE("metal: clear pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
+            return nil;
+        }
+        clear_pso_cache_[key] = pso;
+        return pso;
+    }
+
     id<MTLDepthStencilState> GetDepthStencil(bool z_en, bool z_wr, uint32_t z_fn) {
         const uint32_t key = (uint32_t(z_en) << 17) | (uint32_t(z_wr) << 16) | (z_fn & 0xFFFF);
         if (auto it = dss_cache_.find(key); it != dss_cache_.end()) return it->second;
@@ -1384,6 +1517,9 @@ private:
     id<MTLRenderPipelineState> pipeline_ = nil;
     id<MTLRenderPipelineState> blit_present_pso_ = nil;
     id<MTLRenderPipelineState> blit_copy_pso_ = nil;
+    id<MTLFunction> clear_vs_ = nil;
+    id<MTLFunction> clear_fs_ = nil;
+    std::unordered_map<uint32_t, id<MTLRenderPipelineState>> clear_pso_cache_;
     id<MTLTexture> white_tex_ = nil;
     id<MTLTexture> black_tex_ = nil;
     id<MTLTexture> feedback_tex_ = nil;
