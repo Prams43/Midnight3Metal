@@ -375,7 +375,10 @@ uint32_t AllocateVirtual(uint32_t& base, uint32_t& size, uint32_t type, uint32_t
             if (!a) return 0xC0000017;  // STATUS_NO_MEMORY
             g_user.Forget(a);
         }
-        g_reserved[a] = Reservation{sz, protect, std::vector<uint8_t>(sz / kPage, 0)};
+        // Commit on reservation so guest code that reserves virtual ranges and touches them directly
+        // without a separate MEM_COMMIT call (or across 16 KB host page boundaries on iOS) never faults with SIGBUS.
+        Commit(a, sz);
+        g_reserved[a] = Reservation{sz, protect, std::vector<uint8_t>(sz / kPage, 1)};
         base = a;
         size = sz;
     }

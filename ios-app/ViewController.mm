@@ -113,6 +113,8 @@ static void OverlayLogLine(const char* line) {
     LOGI("MC3 iOS Host: Input subsystem initialized");
 
     // Initialize and smoke-test portable guest memory (4 GiB virtual + shared physical alias)
+    // Use 128 MB physical memory so the game heap grows to 111 MB via sub_002698C0 and does not exhaust 64 MB entering gameplay.
+    mem::SetPhysicalSize(mem::kPhysicalSizeMax);
     if (mem::Init()) {
         uint8_t* base = mem::Base();
         kernel::g_base = base;

@@ -50,8 +50,8 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "ddx(", "dfdx(");
     ReplaceAll(s, "ddy(", "dfdy(");
 
-    // `(float4)(a < b)` -> `float4(a < b)`
-    s = std::regex_replace(s, std::regex(R"(\(float([234])\)\s*\()"), "float$1(");
+    // `(float4)(a < b)` -> `float4(a < b)` and `(float)(...)` -> `float(...)`
+    s = std::regex_replace(s, std::regex(R"(\(float([234]?)\)\s*\()"), "float$1(");
 
     // Fix `mac_mul`: in MSL `(a == 0 || b == 0)` on float4 is invalid; use select
     ReplaceAll(s,
@@ -63,9 +63,6 @@ std::string CommonHlslToMslFixes(std::string s) {
                "float4 mac_mul(float4 a, float4 b) { return select(a * b, float4(0.0f), (a == 0.0f) | (b == 0.0f)); }");
 
     // Scalar `.xxxx` swizzles (invalid on float in MSL)
-    ReplaceAll(s, ".xxxx", " /*.xxxx*/");  // Wait — we need float4(...) instead!
-    // Revert that and handle known `.xxxx` expressions cleanly:
-    ReplaceAll(s, " /*.xxxx*/", ".xxxx");
     s = std::regex_replace(s, std::regex(R"(magclamp\(1\.0 / v\)\.xxxx)"), "float4(magclamp(1.0f / v))");
     s = std::regex_replace(s, std::regex(R"(\(1\.0 / v\)\.xxxx)"), "float4(1.0f / v)");
     s = std::regex_replace(s, std::regex(R"(\(rsqrt\(abs\(v\)\)\)\.xxxx)"), "float4(rsqrt(abs(v)))");
@@ -78,7 +75,8 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "max(s.y, 0)", "max(s.y, 0.0f)");
     ReplaceAll(s, "clamp(z, 0, mx)", "clamp(z, 0.0f, mx)");
     ReplaceAll(s, ", -1, 1)", ", -1.0f, 1.0f)");
-    s = std::regex_replace(s, std::regex(R"(\bmax\(([^,()]+),\s*0\))"), "max($1, 0.0f)");
+    ReplaceAll(s, ", -1.0, 1.0)", ", -1.0f, 1.0f)");
+    s = std::regex_replace(s, std::regex(R"(\bmax\(([^;{}]+?),\s*0(?:\.0)?\))"), "max($1, 0.0f)");
     ReplaceAll(s, "return (b - (b >= 128 ? hi : lo)) / d;", "return (b - select(float3(lo), float3(hi), b >= 128.0f)) / d;");
 
     // Texture sampling methods

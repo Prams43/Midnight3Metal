@@ -68,26 +68,51 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
 }
 )";
 
-MTLBlendFactor ToMetalBlend(uint32_t nv_blend, bool is_src) {
+MTLBlendFactor ToMetalBlend(uint32_t nv_blend, bool is_alpha) {
     // Xbox NV2A uses OpenGL blend factor enums (not D3DBLEND 1..10).
     switch (nv_blend) {
     case 0:      return MTLBlendFactorZero;
     case 1:      return MTLBlendFactorOne;
-    case 0x300:  return MTLBlendFactorSourceColor;
-    case 0x301:  return MTLBlendFactorOneMinusSourceColor;
+    case 0x300:  return is_alpha ? MTLBlendFactorSourceAlpha : MTLBlendFactorSourceColor;
+    case 0x301:  return is_alpha ? MTLBlendFactorOneMinusSourceAlpha : MTLBlendFactorOneMinusSourceColor;
     case 0x302:  return MTLBlendFactorSourceAlpha;
     case 0x303:  return MTLBlendFactorOneMinusSourceAlpha;
     case 0x304:  return MTLBlendFactorDestinationAlpha;
     case 0x305:  return MTLBlendFactorOneMinusDestinationAlpha;
-    case 0x306:  return MTLBlendFactorDestinationColor;
-    case 0x307:  return MTLBlendFactorOneMinusDestinationColor;
+    case 0x306:  return is_alpha ? MTLBlendFactorDestinationAlpha : MTLBlendFactorDestinationColor;
+    case 0x307:  return is_alpha ? MTLBlendFactorOneMinusDestinationAlpha : MTLBlendFactorOneMinusDestinationColor;
     case 0x308:  return MTLBlendFactorSourceAlphaSaturated;
     case 0x8001:
-    case 0x8003: return MTLBlendFactorBlendColor;
+    case 0x8003: return is_alpha ? MTLBlendFactorBlendAlpha : MTLBlendFactorBlendColor;
     case 0x8002:
-    case 0x8004: return MTLBlendFactorOneMinusBlendColor;
-    default:     return is_src ? MTLBlendFactorOne : MTLBlendFactorZero;
+    case 0x8004: return is_alpha ? MTLBlendFactorOneMinusBlendAlpha : MTLBlendFactorOneMinusBlendColor;
+    default:     return MTLBlendFactorOne;
     }
+}
+
+MTLBlendOperation ToMetalBlendOp(uint32_t nv_op) {
+    switch (nv_op) {
+    case 0x800A: return MTLBlendOperationSubtract;
+    case 0x800B:
+    case 0xF005: return MTLBlendOperationReverseSubtract;
+    case 0x8007: return MTLBlendOperationMin;
+    case 0x8008: return MTLBlendOperationMax;
+    case 0:
+    case 0x8006:
+    case 0xF006:
+    default:     return MTLBlendOperationAdd;
+    }
+}
+
+MTLColorWriteMask ToMetalWriteMask(uint32_t cw) {
+    // When unset (0), default to all channels only if kMColorWriteEnable was never written;
+    // in D3D8, SetRenderTarget / InitDefaultState sets kMColorWriteEnable = 0x0F0F0F0F or 0x01010101.
+    MTLColorWriteMask m = MTLColorWriteMaskNone;
+    if ((cw >> 16) & 1) m |= MTLColorWriteMaskRed;
+    if ((cw >> 8) & 1)  m |= MTLColorWriteMaskGreen;
+    if (cw & 1)         m |= MTLColorWriteMaskBlue;
+    if ((cw >> 24) & 1) m |= MTLColorWriteMaskAlpha;
+    return m;
 }
 
 MTLCompareFunction ToMetalCompare(uint32_t d3d_cmp) {
@@ -189,10 +214,10 @@ public:
         vs_func_ = vs;
         fs_func_ = fs;
 
-        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0);
+        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0, 0, MTLColorWriteMaskAll);
         if (!pipeline_) return false;
 
-        // 1x1 white fallback texture for untextured draws
+        // 1x1 white fallback texture for untextured draws, 1x1 transparent black for unrendered RTs
         MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                       width:1
                                                                                      height:1
@@ -201,27 +226,49 @@ public:
         const uint32_t white = 0xFFFFFFFFu;
         [white_tex_ replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&white bytesPerRow:4];
 
+        black_tex_ = [device_ newTextureWithDescriptor:td];
+        const uint32_t black = 0x00000000u;
+        [black_tex_ replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&black bytesPerRow:4];
+
         MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
         sd.minFilter = MTLSamplerMinMagFilterLinear;
         sd.magFilter = MTLSamplerMinMagFilterLinear;
         sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
         sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
         sampler_ = [device_ newSamplerStateWithDescriptor:sd];
+        sd.sAddressMode = MTLSamplerAddressModeRepeat;
+        sd.tAddressMode = MTLSamplerAddressModeRepeat;
+        wrap_sampler_ = [device_ newSamplerStateWithDescriptor:sd];
 
         LOGI("metal: backend initialized (%ux%u, device=%s)", guest_width_, guest_height_,
              [device_.name UTF8String]);
         return true;
     }
 
-    bool IsOffscreenTarget(const State& s) const {
+    bool IsOffscreenTarget(const State& s) {
         if (!s.rt.header) return false;
         uint32_t w = 0, h = 0;
         SurfaceSize(s.rt, w, h);
-        return (w && w != guest_width_) || (h && h != guest_height_);
+        const uint32_t rt_va = mem::VirtualFromPhysical(s.rt.data);
+        if ((w && w != guest_width_) || (h && h != guest_height_)) {
+            if (rt_va) offscreen_rt_data_.insert(rt_va);
+            return true;
+        }
+        // Seed the primary swapchain render target data address on the first full-size target
+        if (rt_va && main_rt_data_.empty()) {
+            main_rt_data_.insert(rt_va);
+        }
+        if (rt_va && !main_rt_data_.empty() && main_rt_data_.find(rt_va) == main_rt_data_.end()) {
+            offscreen_rt_data_.insert(rt_va);
+            return true;
+        }
+        return false;
     }
 
     void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
         if (IsOffscreenTarget(s)) return;
+        // If we already encoded draws in this frame, only apply mid-frame depth clears or full target clears before draws
+        if (encoder_) return;
         if (flags & kClearTarget) {
             const double a = ((color >> 24) & 0xFF) / 255.0;
             const double r = ((color >> 16) & 0xFF) / 255.0;
@@ -239,6 +286,8 @@ public:
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override {
         if (!pipeline_ || !layer_) return;
         if (IsOffscreenTarget(s)) return;
+        const uint32_t blend_op = s.simple[kMBlendOp / 4];
+        if (s.simple[kMBlendEnable / 4] && (blend_op == 0xF005 || blend_op == 0xF006)) return;
         @autoreleasepool {
             DrawImpl(s, prim, start, count, indices);
         }
@@ -296,11 +345,12 @@ public:
 
         // Resolve textures & TexInfo for all 4 stages
         id<MTLTexture> stage_tex[4] = { white_tex_, white_tex_, white_tex_, white_tex_ };
+        id<MTLSamplerState> stage_smp[4] = { sampler_, sampler_, sampler_, sampler_ };
         TexInfo tex_info[4]{};
         float tex_dims[4][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}};
         for (int t = 0; t < 4; ++t) {
             if (s.textures[t]) {
-                TextureDesc td;
+                TextureDesc td{};
                 const uint32_t simple_pal = s.simple[(0x1B20 + uint32_t(t) * 0x40) / 4];
                 id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], simple_pal, &td);
                 if (mt) {
@@ -309,6 +359,11 @@ public:
                     tex_info[t].rect = td.linear ? 1 : 0;
                     tex_dims[t][0] = td.width ? float(td.width) : 1.0f;
                     tex_dims[t][1] = td.height ? float(td.height) : 1.0f;
+                    const uint32_t addr_u = s.tss[size_t(t)][kTssAddressU];
+                    const uint32_t addr_v = s.tss[size_t(t)][kTssAddressV];
+                    if (!td.linear && (addr_u == 1 || addr_v == 1)) {
+                        stage_smp[t] = wrap_sampler_;
+                    }
                 }
             }
         }
@@ -425,7 +480,13 @@ public:
         const bool blend_on = s.simple[kMBlendEnable / 4] != 0;
         const uint32_t src_b = s.simple[kMSrcBlend / 4];
         const uint32_t dst_b = s.simple[kMDestBlend / 4];
-        id<MTLRenderPipelineState> pso = GetPipeline(vs_hash, ps_hash, active_vs, active_fs, blend_on, src_b, dst_b);
+        const uint32_t blend_op = s.simple[kMBlendOp / 4];
+        const uint32_t cw_raw = s.simple[kMColorWriteEnable / 4];
+        const MTLColorWriteMask write_mask = s.SimpleSet(kMColorWriteEnable / 4)
+            ? ToMetalWriteMask(cw_raw)
+            : MTLColorWriteMaskAll;
+        id<MTLRenderPipelineState> pso = GetPipeline(vs_hash, ps_hash, active_vs, active_fs,
+                                                     blend_on, src_b, dst_b, blend_op, write_mask);
         if (!pso) return;
 
         const bool z_en = s.rs[kRsZEnable] != 0;
@@ -444,9 +505,16 @@ public:
 
         [encoder_ setRenderPipelineState:pso];
         if (dss) [encoder_ setDepthStencilState:dss];
+        if (blend_on) {
+            const uint32_t bc = s.simple[kMBlendColor / 4];
+            [encoder_ setBlendColorRed:((bc >> 16) & 0xFF) / 255.0f
+                                 green:((bc >> 8) & 0xFF) / 255.0f
+                                  blue:(bc & 0xFF) / 255.0f
+                                 alpha:((bc >> 24) & 0xFF) / 255.0f];
+        }
         for (int t = 0; t < 4; ++t) {
             [encoder_ setFragmentTexture:stage_tex[t] atIndex:t];
-            [encoder_ setFragmentSamplerState:sampler_ atIndex:t];
+            [encoder_ setFragmentSamplerState:stage_smp[t] atIndex:t];
         }
         if (vb) {
             [encoder_ setVertexBuffer:vb offset:0 atIndex:0];
@@ -540,7 +608,9 @@ public:
 
     void Present(const Surface& front) override {
         if (!layer_ || !queue_) return;
-        if (front.data && main_rt_data_.size() < 8) main_rt_data_.insert(front.data);
+        if (front.data && main_rt_data_.size() < 8) {
+            main_rt_data_.insert(mem::VirtualFromPhysical(front.data));
+        }
         @autoreleasepool {
             if (!encoder_ && has_clear_) EnsureEncoder();
             if (encoder_) {
@@ -759,9 +829,14 @@ private:
 
     id<MTLRenderPipelineState> GetPipeline(uint64_t vs_hash, uint64_t ps_hash,
                                            id<MTLFunction> vs, id<MTLFunction> fs,
-                                           bool blend, uint32_t src_b, uint32_t dst_b) {
-        const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^
-                             ((uint64_t(blend) << 32) | (uint64_t(src_b) << 16) | uint64_t(dst_b));
+                                           bool blend, uint32_t src_b, uint32_t dst_b,
+                                           uint32_t blend_op, MTLColorWriteMask write_mask) {
+        const uint64_t state_bits = (uint64_t(blend) << 56) |
+                                    (uint64_t(write_mask & 0xF) << 48) |
+                                    (uint64_t(blend_op & 0xFFFF) << 32) |
+                                    (uint64_t(src_b & 0xFFFF) << 16) |
+                                    uint64_t(dst_b & 0xFFFF);
+        const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^ (state_bits * 0xBF58476D1CE4E5B9ull);
         if (auto it = pso_cache_.find(key); it != pso_cache_.end()) return it->second;
 
         MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
@@ -769,13 +844,17 @@ private:
         desc.fragmentFunction = fs;
         desc.vertexDescriptor = vertex_desc_;
         desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        desc.colorAttachments[0].writeMask = write_mask;
         desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         if (blend) {
+            const MTLBlendOperation op = ToMetalBlendOp(blend_op);
             desc.colorAttachments[0].blendingEnabled = YES;
-            desc.colorAttachments[0].sourceRGBBlendFactor = ToMetalBlend(src_b, true);
+            desc.colorAttachments[0].rgbBlendOperation = op;
+            desc.colorAttachments[0].alphaBlendOperation = op;
+            desc.colorAttachments[0].sourceRGBBlendFactor = ToMetalBlend(src_b, false);
             desc.colorAttachments[0].destinationRGBBlendFactor = ToMetalBlend(dst_b, false);
             desc.colorAttachments[0].sourceAlphaBlendFactor = ToMetalBlend(src_b, true);
-            desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, false);
+            desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, true);
         }
         NSError* err = nil;
         id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
@@ -832,18 +911,18 @@ private:
         out.assign(size_t(pitch) * h, 0);
         const uint32_t bw = std::max(1u, (w + 3) / 4);
         const uint32_t bh = std::max(1u, (h + 3) / 4);
-        const uint32_t blk_bytes = (host == Host::BC1) ? 8 : 16;
+        const uint32_t blk_bytes = (host == gpu::Host::BC1) ? 8 : 16;
         for (uint32_t by = 0; by < bh; ++by) {
             for (uint32_t bx = 0; bx < bw; ++bx) {
                 const uint8_t* blk = src + (size_t(by) * bw + bx) * blk_bytes;
-                const uint8_t* cblk = (host == Host::BC1) ? blk : (blk + 8);
+                const uint8_t* cblk = (host == gpu::Host::BC1) ? blk : (blk + 8);
                 uint8_t pal[4][4];
-                DecompressBcBlockColor(cblk, pal, host == Host::BC1);
+                DecompressBcBlockColor(cblk, pal, host == gpu::Host::BC1);
                 uint32_t lut = uint32_t(cblk[4]) | (uint32_t(cblk[5]) << 8) |
                                (uint32_t(cblk[6]) << 16) | (uint32_t(cblk[7]) << 24);
                 uint8_t a_pal[8] = {};
                 uint64_t a_lut = 0;
-                if (host == Host::BC3) {
+                if (host == gpu::Host::BC3) {
                     a_pal[0] = blk[0];
                     a_pal[1] = blk[1];
                     if (a_pal[0] > a_pal[1]) {
@@ -869,9 +948,9 @@ private:
                         dst[0] = c[0];
                         dst[1] = c[1];
                         dst[2] = c[2];
-                        if (host == Host::BC1) {
+                        if (host == gpu::Host::BC1) {
                             dst[3] = c[3];
-                        } else if (host == Host::BC2) {
+                        } else if (host == gpu::Host::BC2) {
                             const uint8_t a4 = (blk[idx >> 1] >> ((idx & 1) * 4)) & 0xF;
                             dst[3] = uint8_t((a4 << 4) | a4);
                         } else {
@@ -889,11 +968,18 @@ private:
         if (!Describe(header_va, d) || !d.data || !d.width || !d.height) return nil;
         if (out_desc) *out_desc = d;
         const auto& fi = Format(d.format);
-        const bool is_bc = (fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3);
+        const bool is_bc = (fi.host == gpu::Host::BC1 || fi.host == gpu::Host::BC2 || fi.host == gpu::Host::BC3);
+        if (!is_bc && (offscreen_rt_data_.find(d.data) != offscreen_rt_data_.end() ||
+                       main_rt_data_.find(d.data) != main_rt_data_.end())) {
+            // Unrendered offscreen render targets or swapchain backbuffers sampled by bloom/blur/reflection passes
+            // have no GPU render target backing in this simplified backend; return transparent black so additive
+            // post-process passes contribute 0 instead of solid white or uninitialized diagonal stripes.
+            return black_tex_;
+        }
         MTLPixelFormat mtl_fmt = MTLPixelFormatBGRA8Unorm;
-        if (fi.host == Host::R32F) mtl_fmt = MTLPixelFormatR32Float;
-        else if (fi.host == Host::R16Unorm) mtl_fmt = MTLPixelFormatR16Unorm;
-        else if (fi.host != Host::BGRA8 && !is_bc) return nil;
+        if (fi.host == gpu::Host::R32F) mtl_fmt = MTLPixelFormatR32Float;
+        else if (fi.host == gpu::Host::R16Unorm) mtl_fmt = MTLPixelFormatR16Unorm;
+        else if (fi.host != gpu::Host::BGRA8 && !is_bc) return nil;
 
         constexpr uint32_t kFmtP8 = 0x0B;
         uint32_t pal_data_va = 0;
@@ -936,14 +1022,18 @@ private:
             decoded = std::move(bgra);
             pitch = bgra_pitch;
         } else if (d.format == 0x24 || d.format == 0x25) {
-            // Guard against uninitialized YUY2/UYVY buffers filled with 0x00 or 0xFF before Bink's first frame,
-            // which otherwise decode to neon green (0,0,0,0) or neon pink/magenta (FF,FF,FF,FF).
+            // Guard against uninitialized YUY2/UYVY buffers before Bink decodes its first frame.
+            // Check 4 sample dwords across the frame; if uniform (e.g. all 0x00, 0xFF, or repeating fill),
+            // or if Y/U/V bytes are outside valid video fill, black out the frame to avoid neon pink/green flash.
             const uint32_t total = d.pitch * d.height;
-            if (total >= 16) {
-                uint32_t first_dw = 0, mid_dw = 0;
-                std::memcpy(&first_dw, guest, 4);
-                std::memcpy(&mid_dw, guest + ((total / 2) & ~3u), 4);
-                if ((first_dw == 0 && mid_dw == 0) || (first_dw == 0xFFFFFFFFu && mid_dw == 0xFFFFFFFFu)) {
+            if (total >= 64) {
+                uint32_t dw0 = 0, dw1 = 0, dw2 = 0, dw3 = 0;
+                std::memcpy(&dw0, guest + 0, 4);
+                std::memcpy(&dw1, guest + ((total / 3) & ~3u), 4);
+                std::memcpy(&dw2, guest + ((total / 2) & ~3u), 4);
+                std::memcpy(&dw3, guest + (((total * 2) / 3) & ~3u), 4);
+                if (dw0 == dw1 && dw1 == dw2 && dw2 == dw3 &&
+                    (dw0 == 0u || dw0 == 0xFFFFFFFFu || (dw0 & 0xFFFFu) == (dw0 >> 16))) {
                     for (size_t i = 0; i + 3 < decoded.size(); i += 4) {
                         decoded[i + 0] = 0;
                         decoded[i + 1] = 0;
@@ -1012,6 +1102,7 @@ private:
     uint32_t guest_width_ = 640;
     uint32_t guest_height_ = 480;
     std::unordered_set<uint32_t> main_rt_data_;
+    std::unordered_set<uint32_t> offscreen_rt_data_;
     CAMetalLayer* layer_ = nil;
     id<MTLDevice> device_ = nil;
     id<MTLCommandQueue> queue_ = nil;
@@ -1020,8 +1111,10 @@ private:
     MTLVertexDescriptor* vertex_desc_ = nil;
     id<MTLRenderPipelineState> pipeline_ = nil;
     id<MTLTexture> white_tex_ = nil;
+    id<MTLTexture> black_tex_ = nil;
     id<MTLTexture> depth_tex_ = nil;
     id<MTLSamplerState> sampler_ = nil;
+    id<MTLSamplerState> wrap_sampler_ = nil;
     std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pso_cache_;
     std::unordered_map<uint64_t, id<MTLFunction>> vs_cache_;
     std::unordered_map<uint64_t, id<MTLFunction>> fs_cache_;

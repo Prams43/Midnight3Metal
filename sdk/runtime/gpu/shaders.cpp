@@ -297,12 +297,12 @@ struct Ps {
         else r += in.chan ? ".a" : ".b";
         switch (in.mod) {
             // PS_INPUTMAPPING
-            case 0x00: return "max(" + r + ", 0)";
-            case 0x20: return "(1 - saturate(" + r + "))";
-            case 0x40: return "(2 * max(" + r + ", 0) - 1)";
-            case 0x60: return "(-2 * max(" + r + ", 0) + 1)";
-            case 0x80: return "(max(" + r + ", 0) - 0.5)";
-            case 0xA0: return "(-max(" + r + ", 0) + 0.5)";
+            case 0x00: return "max(" + r + ", 0.0)";
+            case 0x20: return "(1.0 - saturate(" + r + "))";
+            case 0x40: return "(2.0 * max(" + r + ", 0.0) - 1.0)";
+            case 0x60: return "(-2.0 * max(" + r + ", 0.0) + 1.0)";
+            case 0x80: return "(max(" + r + ", 0.0) - 0.5)";
+            case 0xA0: return "(-max(" + r + ", 0.0) + 0.5)";
             case 0xC0: return r;
             default: return "-" + r;
         }
@@ -312,10 +312,10 @@ struct Ps {
         switch (m) {
             // PS_COMBINEROUTPUT bias and shift
             case 0x08: return "(" + v + " - 0.5)";
-            case 0x10: return "(" + v + " * 2)";
-            case 0x18: return "((" + v + " - 0.5) * 2)";
-            case 0x20: return "(" + v + " * 4)";
-            case 0x30: return "(" + v + " / 2)";
+            case 0x10: return "(" + v + " * 2.0)";
+            case 0x18: return "((" + v + " - 0.5) * 2.0)";
+            case 0x20: return "(" + v + " * 4.0)";
+            case 0x30: return "(" + v + " / 2.0)";
             default: return v;
         }
     }
@@ -347,13 +347,13 @@ struct Ps {
         std::string ab = (fl & 2) ? "dot(" + A + ", " + B + ")" : "(" + A + " * " + B + ")";
         std::string cd = (fl & 1) ? "dot(" + C + ", " + D + ")" : "(" + C + " * " + D + ")";
         uint32_t map = fl & 0x38;
-        code += F("%s ab%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(ab, map).c_str());
-        code += F("%s cd%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(cd, map).c_str());
+        code += F("%s ab%s = clamp((%s)%s, -1.0, 1.0);\n", T, n, T, Map(ab, map).c_str());
+        code += F("%s cd%s = clamp((%s)%s, -1.0, 1.0);\n", T, n, T, Map(cd, map).c_str());
         std::string sum = (fl & 4) ? F("((%s) ? (%s)%s : (%s)%s)",
                                        ((k.count >> 8) & 1) ? "r0.a >= 0.5" : "(uint(r0.a * 255) & 1) == 1", T,
                                        cd.c_str(), T, ab.c_str())
                                    : "(" + ab + " + " + cd + ")";
-        code += F("%s ms%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(sum, map).c_str());
+        code += F("%s ms%s = clamp((%s)%s, -1.0, 1.0);\n", T, n, T, Map(sum, map).c_str());
         std::string post;
         if (const char* r = Dest(ab_dst)) {
             post += F("%s.%s = ab%s;\n", r, m, n);
@@ -767,8 +767,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
             }
             s += F("        la += att * lt[%d].rgb;\n", b + 2);
             s += "        float nl = dot(vn, l);\n";
-            s += F("        ld += att * lt[%d].rgb * max(nl, 0);\n", b);
-            if (f.light & 2) s += F("        if (nl > 0) ls += att * lt[%d].rgb * pow(max(dot(vn, normalize(l + eye)), 0), mat[4].x);\n", b + 1);
+            s += F("        ld += att * lt[%d].rgb * max(nl, 0.0);\n", b);
+            if (f.light & 2) s += F("        if (nl > 0.0) ls += att * lt[%d].rgb * pow(max(dot(vn, normalize(l + eye)), 0.0), mat[4].x);\n", b + 1);
             s += "    }\n";
         }
         s += "    oD0 = float4(me.rgb + ma.rgb * (amb.rgb + la) + md.rgb * ld, md.a);\n";
