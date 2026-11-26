@@ -780,4 +780,125 @@ HLE_STDCALL(WSACancelOverlappedIO, 1) {
     return 0;
 }
 
+#else  // !_WIN32
+
+// Non-Windows (iOS/POSIX) offline HLE stubs for XNet / XOnline / Winsock.
+// Without these HLE replacements, recompiled Xbox XNet/XOnline code executes directly
+// and attempts to talk to Xbox NIC hardware / uninitialized XNet state.
+#include <cstdlib>
+#include <cstring>
+#include <random>
+
+#include "xdk/hle.h"
+
+using kernel::HostPtr;
+using kernel::R32;
+using kernel::W32;
+
+namespace {
+
+constexpr uint32_t kXnAddrSize = 0x24;
+constexpr uint32_t kXnDnsSize = 0x28;
+constexpr uint32_t kSocketError = 0xFFFFFFFF;
+constexpr uint32_t kXnAddrEthernet = 0x02 | 0x04;
+constexpr uint32_t kWsaNetDown = 10050;
+constexpr uint32_t kWsaHostNotFound = 11001;
+constexpr uint32_t kWsaIoIncomplete = 996;
+
+thread_local uint32_t t_error = 0;
+
+void FillRandom(uint32_t dst, uint32_t len) {
+    if (!dst || !len) return;
+    static std::mt19937 rng{0x4D433358u};
+    auto* p = static_cast<uint8_t*>(HostPtr(dst));
+    for (uint32_t i = 0; i < len; ++i) p[i] = static_cast<uint8_t>(rng() & 0xFFu);
+}
+
+}  // namespace
+
+HLE_STDCALL(XNetStartup, 1) { return 0; }
+HLE_STDCALL(WSAStartup, 2) {
+    if (a[1]) {
+        std::memset(HostPtr(a[1]), 0, 400);
+        W32(a[1], (0x0202u << 16) | (a[0] & 0xFFFFu));
+    }
+    return 0;
+}
+HLE_STDCALL(XNetGetEthernetLinkStatus, 0) { return 0; }
+HLE_STDCALL(XOnlineStartup, 1) { return 0; }
+HLE_STDCALL(XOnlineCleanup, 0) { return 0; }
+HLE_STDCALL(WSAGetLastError, 0) { return t_error; }
+
+HLE_STDCALL(XNetRandom, 2) {
+    FillRandom(a[0], a[1]);
+    return 0;
+}
+HLE_STDCALL(XNetCreateKey, 2) {
+    FillRandom(a[0], 8);
+    FillRandom(a[1], 16);
+    if (a[0]) kernel::G<uint8_t>(a[0]) &= 0x0F;
+    return 0;
+}
+HLE_STDCALL(XNetRegisterKey, 2) { return 0; }
+HLE_STDCALL(XNetUnregisterKey, 1) { return 0; }
+
+HLE_STDCALL(XNetGetTitleXnAddr, 1) {
+    if (a[0]) {
+        auto* p = static_cast<uint8_t*>(HostPtr(a[0]));
+        std::memset(p, 0, kXnAddrSize);
+        // 127.0.0.1 in network byte order + deterministic local MAC
+        p[0] = 127; p[1] = 0; p[2] = 0; p[3] = 1;
+        p[10] = 0x02; p[11] = 0x4D; p[12] = 0x43; p[13] = 0x33; p[14] = 0x00; p[15] = 0x01;
+    }
+    return kXnAddrEthernet;
+}
+HLE_STDCALL(XNetXnAddrToInAddr, 3) {
+    if (a[2]) W32(a[2], a[0] ? R32(a[0]) : 0x0100007Fu);
+    return 0;
+}
+HLE_STDCALL(XNetInAddrToXnAddr, 3) {
+    if (a[1]) std::memset(HostPtr(a[1]), 0, kXnAddrSize);
+    if (a[2]) std::memset(HostPtr(a[2]), 0, 8);
+    return 0;
+}
+HLE_STDCALL(XNetDnsLookup, 3) {
+    uint32_t dns = mem::AllocSystem(kXnDnsSize);
+    if (dns) {
+        std::memset(HostPtr(dns), 0, kXnDnsSize);
+        W32(dns, kWsaHostNotFound);
+    }
+    if (a[2]) W32(a[2], dns);
+    if (a[1]) {
+        if (kernel::ObjectRef ev = kernel::FromHandle(a[1])) kernel::SetEvent(*ev);
+    }
+    return 0;
+}
+HLE_STDCALL(XNetDnsRelease, 1) {
+    if (a[0]) mem::FreeSystem(a[0]);
+    return 0;
+}
+
+HLE_STDCALL(socket, 3) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(closesocket, 1) { return 0; }
+HLE_STDCALL(shutdown, 2) { return 0; }
+HLE_STDCALL(ioctlsocket, 3) { return 0; }
+HLE_STDCALL(setsockopt, 5) { return 0; }
+HLE_STDCALL(getsockopt, 5) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(getsockname, 3) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(bind, 3) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(connect, 3) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(listen, 2) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(accept, 3) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(select, 5) { return 0; }
+HLE_STDCALL(recvfrom, 6) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(recv, 4) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(send, 4) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(sendto, 6) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(WSARecvFrom, 9) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(WSARecv, 7) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(WSASendTo, 9) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(WSASend, 7) { t_error = kWsaNetDown; return kSocketError; }
+HLE_STDCALL(WSAGetOverlappedResult, 5) { t_error = kWsaIoIncomplete; return 0; }
+HLE_STDCALL(WSACancelOverlappedIO, 1) { return 0; }
+
 #endif  // _WIN32

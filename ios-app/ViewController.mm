@@ -1,6 +1,7 @@
 #import "ViewController.h"
 #import "app/ios_touch_controls.h"
 #import "MC3DebugOverlay.h"
+#include "app/app.h"
 #include "audio/audio.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <memory>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
@@ -22,16 +24,17 @@
 static std::atomic<uint64_t> g_audioFrames{0};
 
 // Crash reporter: writes signal, fault address (and the guest VA when it lies in guest memory),
-// guest stack and host backtrace into the log file before the process dies.
+// guest stack and host backtrace (with symbol names via dladdr) into the log file before dying.
 static void MC3CrashHandler(int sig, siginfo_t* info, void*) {
     static std::atomic<int> entered{0};
     if (entered.exchange(1)) _exit(128 + sig);
     const uintptr_t addr = reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr);
     const uintptr_t base = reinterpret_cast<uintptr_t>(mem::Base());
     const uint32_t guest_va = (base && addr >= base && addr < base + 0x100000000ull) ? uint32_t(addr - base) : 0u;
+    const intptr_t slide = _dyld_get_image_vmaddr_slide(0);
     LOGE("CRASH: signal=%d code=%d addr=%p guest_va=%08X base=%p slide=%p", sig, info ? info->si_code : 0,
          reinterpret_cast<void*>(addr), guest_va,
-         reinterpret_cast<void*>(base), reinterpret_cast<void*>(_dyld_get_image_vmaddr_slide(0)));
+         reinterpret_cast<void*>(base), reinterpret_cast<void*>(slide));
     if (guest_va) {
         mem::RegionInfo ri{};
         const bool qok = mem::QueryVirtual(guest_va, ri);
@@ -40,12 +43,28 @@ static void MC3CrashHandler(int sig, siginfo_t* info, void*) {
              mem::IsCommitted(guest_va) ? 1 : 0, qok ? 1 : 0, ri.base, ri.alloc_base, ri.size, ri.state, ri.protect,
              ms.available_pages, ms.total_pages, ms.contiguous_used, ms.system_used, ms.virtual_committed);
     }
-    if (kernel::Thread* t = kernel::Current(); t && t->ctx) kernel::LogGuestStack(*t->ctx, 64);
+    if (kernel::Thread* t = kernel::Current(); t && t->ctx) {
+        kernel::LogGuestStack(*t->ctx, 64);
+        const uint32_t esi = t->ctx->esi;
+        if (esi && mem::IsCommitted(esi) && mem::IsCommitted(esi + 0x3C)) {
+            LOGE("CRASH: [esi=%08X] %08X %08X %08X %08X | +10: %08X %08X %08X %08X | +20: %08X %08X %08X %08X | +30: %08X %08X %08X %08X",
+                 esi,
+                 kernel::R32(esi + 0x00), kernel::R32(esi + 0x04), kernel::R32(esi + 0x08), kernel::R32(esi + 0x0C),
+                 kernel::R32(esi + 0x10), kernel::R32(esi + 0x14), kernel::R32(esi + 0x18), kernel::R32(esi + 0x1C),
+                 kernel::R32(esi + 0x20), kernel::R32(esi + 0x24), kernel::R32(esi + 0x28), kernel::R32(esi + 0x2C),
+                 kernel::R32(esi + 0x30), kernel::R32(esi + 0x34), kernel::R32(esi + 0x38), kernel::R32(esi + 0x3C));
+        }
+    }
     void* frames[40];
     const int n = backtrace(frames, 40);
-    for (int i = 0; i < n; i++)
-        LOGE("CRASH: frame %d %p (unslid %p)", i, frames[i],
-             reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(frames[i]) - _dyld_get_image_vmaddr_slide(0)));
+    for (int i = 0; i < n; i++) {
+        Dl_info dli{};
+        const char* sym = (dladdr(frames[i], &dli) && dli.dli_sname) ? dli.dli_sname : "?";
+        const uintptr_t sym_off = dli.dli_saddr ? (reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(dli.dli_saddr)) : 0;
+        LOGE("CRASH: frame %d %p (unslid %p) %s+0x%lx", i, frames[i],
+             reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(frames[i]) - slide),
+             sym, static_cast<unsigned long>(sym_off));
+    }
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -197,6 +216,7 @@ static void OverlayLogLine(const char* line) {
             std::string dataDir = [[docsDir stringByAppendingPathComponent:@"save"] UTF8String];
             [[NSFileManager defaultManager] createDirectoryAtPath:[docsDir stringByAppendingPathComponent:@"save"]
                                       withIntermediateDirectories:YES attributes:nil error:nil];
+            if (app::kGame.init) app::kGame.init();
             bool booted = kernel::Boot(std::move(xbeBytes), "default.xbe", gameDir, dataDir);
             _gameBooted = booted ? YES : NO;
             [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s (ep=0x%08X)",
