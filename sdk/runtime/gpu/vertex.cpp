@@ -96,9 +96,15 @@ void Convert(uint32_t type, const uint8_t* p, float* o) {
     }
 }
 
-// A/B switch: 0 converts every vertex on the CPU, the older path
+// A/B switch: 0 converts every vertex on the CPU, the older path.
+// On non-Windows (Metal), always convert on the CPU so all Xbox vertex formats
+// (SHORT, NORMSHORT, FLOAT2H, NORMPACKED3, D3DCOLOR) are unpacked into float4.
 #ifndef XBE_RAW_VERTICES
+#ifdef _WIN32
 #define XBE_RAW_VERTICES 1
+#else
+#define XBE_RAW_VERTICES 0
+#endif
 #endif
 constexpr bool kRawVertices = XBE_RAW_VERTICES;
 

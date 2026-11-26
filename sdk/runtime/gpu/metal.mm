@@ -11,6 +11,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -25,9 +26,15 @@ namespace {
 CAMetalLayer* g_metal_layer = nil;
 
 struct MetalVertex {
-    float pos[4];
-    float col[4];
-    float uv[2];
+    float pos[4];     // v0
+    float weight[4];  // v1
+    float norm[4];    // v2
+    float col[4];     // v3
+    float spec[4];    // v4
+    float uv0[4];     // v9
+    float uv1[4];     // v10
+    float uv2[4];     // v11
+    float uv3[4];     // v12
 };
 
 static const char* kMetalPassthroughShader = R"(
@@ -37,7 +44,7 @@ using namespace metal;
 struct VertexIn {
     float4 position [[attribute(0)]];
     float4 color [[attribute(3)]];
-    float2 uv [[attribute(9)]];
+    float4 uv [[attribute(9)]];
 };
 
 struct VertexOut {
@@ -50,7 +57,7 @@ vertex VertexOut vertex_main(VertexIn in [[stage_in]]) {
     VertexOut out;
     out.position = in.position;
     out.color = in.color;
-    out.uv = in.uv;
+    out.uv = in.uv.xy;
     return out;
 }
 
@@ -160,17 +167,20 @@ public:
         }
 
         MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
-        vd.attributes[0].format = MTLVertexFormatFloat4;
-        vd.attributes[0].offset = offsetof(MetalVertex, pos);
-        vd.attributes[0].bufferIndex = 0;
-
-        vd.attributes[3].format = MTLVertexFormatFloat4;
-        vd.attributes[3].offset = offsetof(MetalVertex, col);
-        vd.attributes[3].bufferIndex = 0;
-
-        vd.attributes[9].format = MTLVertexFormatFloat2;
-        vd.attributes[9].offset = offsetof(MetalVertex, uv);
-        vd.attributes[9].bufferIndex = 0;
+        auto set_attr = [&](NSUInteger idx, size_t off) {
+            vd.attributes[idx].format = MTLVertexFormatFloat4;
+            vd.attributes[idx].offset = off;
+            vd.attributes[idx].bufferIndex = 0;
+        };
+        set_attr(0, offsetof(MetalVertex, pos));
+        set_attr(1, offsetof(MetalVertex, weight));
+        set_attr(2, offsetof(MetalVertex, norm));
+        set_attr(3, offsetof(MetalVertex, col));
+        set_attr(4, offsetof(MetalVertex, spec));
+        set_attr(9, offsetof(MetalVertex, uv0));
+        set_attr(10, offsetof(MetalVertex, uv1));
+        set_attr(11, offsetof(MetalVertex, uv2));
+        set_attr(12, offsetof(MetalVertex, uv3));
 
         vd.layouts[0].stride = sizeof(MetalVertex);
         vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
@@ -205,14 +215,9 @@ public:
 
     bool IsOffscreenTarget(const State& s) const {
         if (!s.rt.header) return false;
-        // The title draws the frame into the swap chain buffers it later presents (their memory rotates, so
-        // collect every presented data address); any other target is a render-to-texture pass
-        // (glow, reflection, shadow) that must not be drawn onto the screen.
-        if (main_rt_data_.count(s.rt.data)) return false;
         uint32_t w = 0, h = 0;
         SurfaceSize(s.rt, w, h);
-        if ((w && w != guest_width_) || (h && h != guest_height_)) return true;
-        return main_rt_data_.size() >= 3;
+        return (w && w != guest_width_) || (h && h != guest_height_);
     }
 
     void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
@@ -296,7 +301,8 @@ public:
         for (int t = 0; t < 4; ++t) {
             if (s.textures[t]) {
                 TextureDesc td;
-                id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], &td);
+                const uint32_t simple_pal = s.simple[(0x1B20 + uint32_t(t) * 0x40) / 4];
+                id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], simple_pal, &td);
                 if (mt) {
                     stage_tex[t] = mt;
                     tex_info[t].kind = (td.cube) ? kTexCube : (td.depth > 1) ? kTex3D : kTex2D;
@@ -307,8 +313,11 @@ public:
             }
         }
 
-        // Determine active vertex registers supplied by our MetalVertex layout (v0=pos, v3=col, v9=uv)
-        const uint16_t supplied_regs = (1u << 0) | (1u << 3) | (1u << 9);
+        // Determine active vertex registers supplied by our MetalVertex layout
+        constexpr uint16_t kSupportedRegs = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) |
+                                            (1u << 9) | (1u << 10) | (1u << 11) | (1u << 12);
+        const uint16_t supplied_regs = (a.regs & kSupportedRegs) | (1u << 0);
+        const FixedKey fk = MakeFixedKey(s);
         uint64_t vs_hash = 0, ps_hash = 0;
         id<MTLFunction> active_vs = nil;
         id<MTLFunction> active_fs = nil;
@@ -316,7 +325,7 @@ public:
         {
             std::string vs_hlsl = (s.vs && !s.vs->program.empty())
                 ? VertexProgramHlsl(s.vs->program, supplied_regs, 0)
-                : FixedVertexHlsl(supplied_regs, a.pretransformed, 0, MakeFixedKey(s));
+                : FixedVertexHlsl(supplied_regs, a.pretransformed, 0, fk);
             std::string vs_msl = TranslateVertexHlslToMsl(vs_hlsl, supplied_regs);
             vs_hash = Hash(vs_msl.data(), vs_msl.size());
             active_vs = GetOrCompileFunction(vs_hash, vs_msl, @"vs_main", vs_cache_);
@@ -366,17 +375,34 @@ public:
                 verts[i].pos[3] = pv[3];
             }
 
+            if (!read_attr(1, i, verts[i].weight)) {
+                verts[i].weight[0] = verts[i].weight[1] = verts[i].weight[2] = 0.0f;
+                verts[i].weight[3] = 1.0f;
+            }
+            if (!read_attr(2, i, verts[i].norm)) {
+                verts[i].norm[0] = verts[i].norm[1] = 0.0f;
+                verts[i].norm[2] = 1.0f;
+                verts[i].norm[3] = 0.0f;
+            }
             if (!read_attr(3, i, verts[i].col)) {
                 verts[i].col[0] = 1.0f;
                 verts[i].col[1] = 1.0f;
                 verts[i].col[2] = 1.0f;
                 verts[i].col[3] = 1.0f;
             }
+            if (!read_attr(4, i, verts[i].spec)) {
+                verts[i].spec[0] = verts[i].spec[1] = verts[i].spec[2] = verts[i].spec[3] = 0.0f;
+            }
 
-            float uv[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            read_attr(9, i, uv);
-            verts[i].uv[0] = uv[0];
-            verts[i].uv[1] = uv[1];
+            auto fill_uv = [&](int reg, float dst[4]) {
+                dst[0] = dst[1] = dst[2] = 0.0f;
+                dst[3] = 1.0f;
+                read_attr(reg, i, dst);
+            };
+            fill_uv(9, verts[i].uv0);
+            fill_uv(10, verts[i].uv1);
+            fill_uv(11, verts[i].uv2);
+            fill_uv(12, verts[i].uv3);
         }
 
         if (!EnsureEncoder()) return;
@@ -408,7 +434,7 @@ public:
 
         if (use_translated) {
             DrawConstants dc{};
-            FillDrawConstants(s, dc, tex_dims);
+            FillDrawConstants(s, fk, dc, tex_dims);
             [encoder_ setVertexBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
             [encoder_ setVertexBytes:&dc length:sizeof(dc) atIndex:17];
             [encoder_ setFragmentBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
@@ -525,6 +551,15 @@ public:
 
     void SetGamma(const uint8_t*) override {}
 
+    void GetReport(uint32_t report) override {
+        if (!report) return;
+        kernel::W32(report + 0, 1);
+        kernel::W32(report + 4, 0);
+        kernel::W32(report + 8, 0);
+        std::atomic_thread_fence(std::memory_order_release);
+        kernel::W32(report + 12, 0);
+    }
+
 private:
     struct CachedTex {
         id<MTLTexture> tex = nil;
@@ -559,9 +594,38 @@ private:
         }
     }
 
-    void FillDrawConstants(const State& s, DrawConstants& dc, const float tex_dims[4][2]) {
-        dc.surf[0] = float(guest_width_);
-        dc.surf[1] = float(guest_height_);
+    static void TransposeMat4(const float m[16], float out[16]) {
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                out[c * 4 + r] = m[r * 4 + c];
+            }
+        }
+    }
+
+    static void InverseTranspose3x3(const float wv[16], float n[16]) {
+        const float det = wv[0] * (wv[5] * wv[10] - wv[6] * wv[9]) -
+                          wv[1] * (wv[4] * wv[10] - wv[6] * wv[8]) +
+                          wv[2] * (wv[4] * wv[9] - wv[5] * wv[8]);
+        const float id = det != 0.0f ? (1.0f / det) : 0.0f;
+        for (int r = 0; r < 3; ++r) {
+            for (int col = 0; col < 3; ++col) {
+                const int r1 = (r + 1) % 3, r2 = (r + 2) % 3;
+                const int c1 = (col + 1) % 3, c2 = (col + 2) % 3;
+                n[r * 4 + col] = (wv[r1 * 4 + c1] * wv[r2 * 4 + c2] - wv[r1 * 4 + c2] * wv[r2 * 4 + c1]) * id;
+            }
+        }
+    }
+
+    static uint32_t CmpIndex(uint32_t v) {
+        const uint32_t c = (v >= 0x200) ? (v - 0x200 + 1) : v;
+        return (c >= 1 && c <= 8) ? (c - 1) : 7;
+    }
+
+    void FillDrawConstants(const State& s, const FixedKey& fk, DrawConstants& dc, const float tex_dims[4][2]) {
+        const float gw = float(guest_width_);
+        const float gh = float(guest_height_);
+        dc.surf[0] = gw;
+        dc.surf[1] = gh;
         dc.surf[2] = s.zscale > 0.0f ? (1.0f / s.zscale) : (1.0f / 16777215.0f);
         dc.surf[3] = 0.0f;
 
@@ -570,47 +634,102 @@ private:
             std::memcpy(&f, &u, 4);
             return f;
         };
-        dc.fog[0] = f32(s.rs[kRsFogStart]);
-        dc.fog[1] = f32(s.rs[kRsFogEnd]);
-        dc.fog[2] = f32(s.rs[kRsFogDensity]);
-        dc.fog[3] = s.rs[kRsFogEnable] ? float(s.rs[kRsFogTableMode]) : 0.0f;
+        const bool vertex_prog = (s.vs && !s.vs->program.empty());
+        if (s.rs[kRsFogEnable]) {
+            if (vertex_prog && s.rs[kRsFogTableMode] == 0) {
+                dc.fog[0] = 1.0f;
+                dc.fog[1] = 0.0f;
+                dc.fog[2] = 0.0f;
+                dc.fog[3] = 3.0f;
+            } else {
+                dc.fog[0] = f32(s.rs[kRsFogStart]);
+                dc.fog[1] = f32(s.rs[kRsFogEnd]);
+                dc.fog[2] = f32(s.rs[kRsFogDensity]);
+                dc.fog[3] = float(s.rs[kRsFogTableMode]);
+            }
+        }
 
-        const uint32_t fc = s.rs[kRsFogColor];
-        dc.fog_color[0] = ((fc >> 16) & 0xFF) / 255.0f;
-        dc.fog_color[1] = ((fc >> 8) & 0xFF) / 255.0f;
-        dc.fog_color[2] = (fc & 0xFF) / 255.0f;
-        dc.fog_color[3] = ((fc >> 24) & 0xFF) / 255.0f;
+        auto unpack_c = [](uint32_t v, float out[4]) {
+            out[0] = ((v >> 16) & 0xFF) / 255.0f;
+            out[1] = ((v >> 8) & 0xFF) / 255.0f;
+            out[2] = (v & 0xFF) / 255.0f;
+            out[3] = ((v >> 24) & 0xFF) / 255.0f;
+        };
+        unpack_c(s.rs[kRsFogColor], dc.fog_color);
 
         dc.misc[0] = float(s.simple[kMAlphaRef / 4] & 0xFF);
-        dc.misc[1] = s.simple[kMAlphaTestEnable / 4] ? float(s.simple[kMAlphaFunc / 4] & 7) : 7.0f;
-        dc.misc[2] = float(s.rs[kRsShadowFunc]);
+        dc.misc[1] = s.simple[kMAlphaTestEnable / 4] ? float(CmpIndex(s.simple[kMAlphaFunc / 4])) : 7.0f;
+        dc.misc[2] = float(CmpIndex(s.rs[kRsShadowFunc]));
         dc.misc[3] = s.rs[kRsSpecularEnable] ? 1.0f : 0.0f;
 
-        const uint32_t tf = s.rs[kRsTextureFactor];
-        dc.tfactor[0] = ((tf >> 16) & 0xFF) / 255.0f;
-        dc.tfactor[1] = ((tf >> 8) & 0xFF) / 255.0f;
-        dc.tfactor[2] = (tf & 0xFF) / 255.0f;
-        dc.tfactor[3] = ((tf >> 24) & 0xFF) / 255.0f;
+        unpack_c(s.rs[kRsTextureFactor], dc.tfactor);
 
         for (int i = 0; i < 8; ++i) {
-            auto unpack_c = [&](uint32_t v, float out[4]) {
-                out[0] = ((v >> 16) & 0xFF) / 255.0f;
-                out[1] = ((v >> 8) & 0xFF) / 255.0f;
-                out[2] = (v & 0xFF) / 255.0f;
-                out[3] = ((v >> 24) & 0xFF) / 255.0f;
-            };
             unpack_c(s.simple[kMPsConstant0 / 4 + i], dc.pc[i * 2 + 0]);
             unpack_c(s.simple[kMPsConstant1 / 4 + i], dc.pc[i * 2 + 1]);
         }
-        std::memcpy(dc.wv, s.transforms[256].data(), 64);
-        float wv[16];
+        unpack_c(s.simple[kMPsFinalConstant0 / 4], dc.pc[16]);
+        unpack_c(s.simple[kMPsFinalConstant1 / 4], dc.pc[17]);
+
+        float wv[16], wvp[16], full[16], n[16] = {};
         MulMat4(s.transforms[256].data(), s.transforms[2].data(), wv);
-        std::memcpy(dc.wv, wv, 64);
-        MulMat4(wv, s.transforms[3].data(), dc.wvp);
+        MulMat4(wv, s.transforms[3].data(), wvp);
+        const auto& vp = s.viewport;
+        const float sx = float(vp.w) / gw;
+        const float sy = float(vp.h) / gh;
+        const float ox = (2.0f * vp.x + vp.w) / gw - 1.0f;
+        const float oy = 1.0f - (2.0f * vp.y + vp.h) / gh;
+        const float vpm[16] = {
+            sx, 0,  0,                  0,
+            0,  sy, 0,                  0,
+            0,  0,  vp.max_z - vp.min_z, 0,
+            ox, oy, vp.min_z,           1
+        };
+        MulMat4(wvp, vpm, full);
+        TransposeMat4(full, dc.wvp);
+        TransposeMat4(wv, dc.wv);
+        InverseTranspose3x3(wv, n);
+        TransposeMat4(n, dc.wvn);
+
         for (int t = 0; t < 4; ++t) {
-            std::memcpy(dc.tm[t], s.transforms[4 + t].data(), 64);
+            TransposeMat4(s.transforms[16 + t].data(), dc.tm[t]);
             dc.texsize[t][0] = tex_dims[t][0];
             dc.texsize[t][1] = tex_dims[t][1];
+            const auto& ts = s.tss[size_t(t)];
+            dc.bump[t][0] = f32(ts[kTssBumpEnvMat00]);
+            dc.bump[t][1] = f32(ts[kTssBumpEnvMat01]);
+            dc.bump[t][2] = f32(ts[kTssBumpEnvMat10]);
+            dc.bump[t][3] = f32(ts[kTssBumpEnvMat11]);
+            dc.bumpl[t][0] = f32(ts[kTssBumpEnvLScale]);
+            dc.bumpl[t][1] = f32(ts[kTssBumpEnvLOffset]);
+        }
+
+        std::memcpy(dc.mat, s.material.data(), sizeof(float) * 16);
+        dc.mat[4][0] = s.material[16];
+        unpack_c(s.rs[kRsAmbient], dc.amb);
+        const float* vm = s.transforms[2].data();
+        for (int i = 0; i < 8; ++i) {
+            if (!((fk.types >> (i * 2)) & 3)) continue;
+            float f[26];
+            std::memcpy(f, s.lights[size_t(i)].data(), sizeof(f));
+            for (int j = 0; j < 4; ++j) {
+                dc.lt[i][0][j] = f[1 + j];
+                dc.lt[i][1][j] = f[5 + j];
+                dc.lt[i][2][j] = f[9 + j];
+            }
+            const float* pos = f + 13;
+            const float* dir = f + 16;
+            for (int j = 0; j < 3; ++j) {
+                dc.lt[i][3][j] = pos[0] * vm[j] + pos[1] * vm[4 + j] + pos[2] * vm[8 + j] + vm[12 + j];
+                dc.lt[i][4][j] = dir[0] * vm[j] + dir[1] * vm[4 + j] + dir[2] * vm[8 + j];
+            }
+            dc.lt[i][3][3] = f[19];
+            dc.lt[i][4][3] = f[20];
+            dc.lt[i][5][0] = f[21];
+            dc.lt[i][5][1] = f[22];
+            dc.lt[i][5][2] = f[23];
+            dc.lt[i][6][0] = std::cos(f[24] * 0.5f);
+            dc.lt[i][6][1] = std::cos(f[25] * 0.5f);
         }
     }
 
@@ -656,7 +775,8 @@ private:
         return dss;
     }
 
-    id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va, TextureDesc* out_desc = nullptr) {
+    id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va, uint32_t simple_palette,
+                                  TextureDesc* out_desc = nullptr) {
         TextureDesc d;
         if (!Describe(header_va, d) || !d.data || !d.width || !d.height) return nil;
         if (out_desc) *out_desc = d;
@@ -666,15 +786,26 @@ private:
         else if (fi.host == Host::R16Unorm) mtl_fmt = MTLPixelFormatR16Unorm;
         else if (fi.host != Host::BGRA8) return nil;
 
+        constexpr uint32_t kFmtP8 = 0x0B;
+        uint32_t pal_data_va = 0;
+        if (d.format == kFmtP8) {
+            if (palette_va) {
+                pal_data_va = mem::VirtualFromPhysical(kernel::R32(palette_va + 4));
+            } else if (simple_palette) {
+                pal_data_va = mem::VirtualFromPhysical(simple_palette & ~0x3Fu);
+            }
+        }
+
         const uint64_t epoch = DirtyEpoch(d.data);
-        auto& entry = tex_cache_[d.data];
+        const uint64_t cache_key = (uint64_t(pal_data_va) << 32) | d.data;
+        auto& entry = tex_cache_[cache_key];
         if (entry.tex && entry.format == d.format && entry.w == d.width && entry.h == d.height &&
             entry.epoch == epoch) {
             return entry.tex;
         }
 
         const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-        const uint32_t* pal = palette_va ? static_cast<const uint32_t*>(kernel::HostPtr(palette_va)) : nullptr;
+        const uint32_t* pal = pal_data_va ? static_cast<const uint32_t*>(kernel::HostPtr(pal_data_va)) : nullptr;
         std::vector<uint8_t> decoded;
         uint32_t pitch = 0;
         DecodeLevel(d, 0, 0, guest, pal, decoded, pitch);
@@ -752,7 +883,7 @@ private:
     std::unordered_map<uint64_t, id<MTLFunction>> fs_cache_;
     std::unordered_set<uint64_t> failed_shaders_;
     std::unordered_map<uint32_t, id<MTLDepthStencilState>> dss_cache_;
-    std::unordered_map<uint32_t, CachedTex> tex_cache_;
+    std::unordered_map<uint64_t, CachedTex> tex_cache_;
 
     id<CAMetalDrawable> drawable_ = nil;
     id<MTLCommandBuffer> cmd_buf_ = nil;
