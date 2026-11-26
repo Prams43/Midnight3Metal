@@ -14,8 +14,41 @@
 #include <cstring>
 #include <memory>
 #include <cstdlib>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+#include <mach-o/dyld.h>
 
 static std::atomic<uint64_t> g_audioFrames{0};
+
+// Crash reporter: writes signal, fault address (and the guest VA when it lies in guest memory),
+// guest stack and host backtrace into the log file before the process dies.
+static void MC3CrashHandler(int sig, siginfo_t* info, void*) {
+    static std::atomic<int> entered{0};
+    if (entered.exchange(1)) _exit(128 + sig);
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(mem::Base());
+    LOGE("CRASH: signal=%d code=%d addr=%p guest_va=%08X base=%p slide=%p", sig, info ? info->si_code : 0,
+         reinterpret_cast<void*>(addr),
+         (base && addr >= base && addr < base + 0x100000000ull) ? uint32_t(addr - base) : 0u,
+         reinterpret_cast<void*>(base), reinterpret_cast<void*>(_dyld_get_image_vmaddr_slide(0)));
+    if (kernel::Thread* t = kernel::Current(); t && t->ctx) kernel::LogGuestStack(*t->ctx, 64);
+    void* frames[40];
+    const int n = backtrace(frames, 40);
+    for (int i = 0; i < n; i++)
+        LOGE("CRASH: frame %d %p (unslid %p)", i, frames[i],
+             reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(frames[i]) - _dyld_get_image_vmaddr_slide(0)));
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void InstallCrashHandler() {
+    struct sigaction sa{};
+    sa.sa_sigaction = MC3CrashHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    for (int s : {SIGSEGV, SIGBUS, SIGILL, SIGABRT, SIGFPE, SIGTRAP}) sigaction(s, &sa, nullptr);
+}
 
 // UIView subclass that uses CAMetalLayer as its backing layer.
 // This is the correct way to get a Metal-backed view on iOS: override +layerClass
@@ -73,6 +106,7 @@ static void OverlayLogLine(const char* line) {
     NSString* tmpDir = NSTemporaryDirectory();
     logx::Init(tmpDir ? [tmpDir UTF8String] : "/tmp", "mc3ios");
     LOGI("MC3 iOS Host: UIKit app host started");
+    InstallCrashHandler();
 
     // Initialize input subsystem (SDL gamepad + virtual controls)
     input::Init();

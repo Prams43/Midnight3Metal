@@ -205,9 +205,14 @@ public:
 
     bool IsOffscreenTarget(const State& s) const {
         if (!s.rt.header) return false;
+        // The title draws the frame into the swap chain buffers it later presents (their memory rotates, so
+        // collect every presented data address); any other target is a render-to-texture pass
+        // (glow, reflection, shadow) that must not be drawn onto the screen.
+        if (main_rt_data_.count(s.rt.data)) return false;
         uint32_t w = 0, h = 0;
         SurfaceSize(s.rt, w, h);
-        return (w && w != guest_width_) || (h && h != guest_height_);
+        if ((w && w != guest_width_) || (h && h != guest_height_)) return true;
+        return main_rt_data_.size() >= 3;
     }
 
     void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
@@ -485,8 +490,9 @@ public:
 
     void Copy(const Surface&, const Surface&, uint32_t, uint32_t, uint32_t) override {}
 
-    void Present(const Surface&) override {
+    void Present(const Surface& front) override {
         if (!layer_ || !queue_) return;
+        if (front.data && main_rt_data_.size() < 8) main_rt_data_.insert(front.data);
         @autoreleasepool {
             if (!encoder_ && has_clear_) EnsureEncoder();
             if (encoder_) {
@@ -730,6 +736,7 @@ private:
 
     uint32_t guest_width_ = 640;
     uint32_t guest_height_ = 480;
+    std::unordered_set<uint32_t> main_rt_data_;
     CAMetalLayer* layer_ = nil;
     id<MTLDevice> device_ = nil;
     id<MTLCommandQueue> queue_ = nil;
