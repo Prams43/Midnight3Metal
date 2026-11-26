@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 
@@ -448,6 +449,25 @@ X86_FUNC(sub_002698C0) {
         LOGR("MC3MEMORY guest %u MB: game heap %u -> %u MB", mem::PhysicalSize() >> 20, mb, mb + extra);
     }
     __imp__sub_002698C0(ctx, base);
+}
+
+// mcMoviePlayer::Play(const char* path), thiscall with one stack argument. The iOS host has no working Bink
+// path (the intro crashes when it is skipped), so with MC3_SKIP_MC2_MOVIES set Play reports failure at once:
+// the movie never starts, +0x20 stays clear and the game's state-4 update moves on to the next state.
+X86_EXTERN_FUNC(__imp__sub_0015AA30);
+X86_FUNC(sub_0015AA30) {
+    if (std::getenv("MC3_SKIP_MC2_MOVIES")) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            LOGE("MC3: movie playback disabled on this host, mcMoviePlayer::Play('%s') skipped",
+                 reinterpret_cast<const char*>(base + X86_MEM32(ctx.esp + 4)));
+        }
+        ctx.eax = 0;
+        ctx.esp += 8;  // return address and the path argument
+        return;
+    }
+    __imp__sub_0015AA30(ctx, base);
 }
 
 // The Xbox Bink timer waits against an audio/timing callback whose reconstructed
