@@ -826,7 +826,7 @@ private:
         }
     }
 
-    static void DecompressBcToBgra8(Host host, uint32_t w, uint32_t h, const uint8_t* src,
+    static void DecompressBcToBgra8(gpu::Host host, uint32_t w, uint32_t h, const uint8_t* src,
                                     std::vector<uint8_t>& out, uint32_t& pitch) {
         pitch = w * 4;
         out.assign(size_t(pitch) * h, 0);
@@ -942,7 +942,7 @@ private:
             if (total >= 16) {
                 uint32_t first_dw = 0, mid_dw = 0;
                 std::memcpy(&first_dw, guest, 4);
-                std::memcpy(&mid_dw, guest + (total / 2) & ~3u, 4);
+                std::memcpy(&mid_dw, guest + ((total / 2) & ~3u), 4);
                 if ((first_dw == 0 && mid_dw == 0) || (first_dw == 0xFFFFFFFFu && mid_dw == 0xFFFFFFFFu)) {
                     for (size_t i = 0; i + 3 < decoded.size(); i += 4) {
                         decoded[i + 0] = 0;
