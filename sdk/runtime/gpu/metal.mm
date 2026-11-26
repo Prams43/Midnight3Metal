@@ -323,18 +323,33 @@ public:
         id<MTLFunction> active_fs = nil;
 
         {
-            std::string vs_hlsl = (s.vs && !s.vs->program.empty())
-                ? VertexProgramHlsl(s.vs->program, supplied_regs, 0)
-                : FixedVertexHlsl(supplied_regs, a.pretransformed, 0, fk);
-            std::string vs_msl = TranslateVertexHlslToMsl(vs_hlsl, supplied_regs);
-            vs_hash = Hash(vs_msl.data(), vs_msl.size());
-            active_vs = GetOrCompileFunction(vs_hash, vs_msl, @"vs_main", vs_cache_);
+            const bool is_prog_vs = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+            if (is_prog_vs) {
+                uint64_t prog_h = s.vs->hash ? s.vs->hash : Hash(s.vs->program.data(), s.vs->program.size() * 4);
+                vs_hash = Hash(&prog_h, sizeof(prog_h), uint64_t(supplied_regs) | 0x5653505200000000ull);
+            } else {
+                vs_hash = Hash(&fk, sizeof(fk),
+                               uint64_t(supplied_regs) | (uint64_t(a.pretransformed) << 16) | 0x5653464600000000ull);
+            }
+            if (auto it = vs_cache_.find(vs_hash); it != vs_cache_.end()) {
+                active_vs = it->second;
+            } else {
+                std::string vs_hlsl = is_prog_vs
+                    ? VertexProgramHlsl(s.vs->program, supplied_regs, 0)
+                    : FixedVertexHlsl(supplied_regs, a.pretransformed, 0, fk);
+                std::string vs_msl = TranslateVertexHlslToMsl(vs_hlsl, supplied_regs);
+                active_vs = GetOrCompileFunction(vs_hash, vs_msl, @"vs_main", vs_cache_);
+            }
 
             PixelKey pk = MakePixelKey(s, tex_info);
-            std::string ps_hlsl = PixelHlsl(pk);
-            std::string ps_msl = TranslatePixelHlslToMsl(ps_hlsl, pk);
-            ps_hash = Hash(ps_msl.data(), ps_msl.size());
-            active_fs = GetOrCompileFunction(ps_hash, ps_msl, @"fs_main", fs_cache_);
+            ps_hash = Hash(&pk, sizeof(pk));
+            if (auto it = fs_cache_.find(ps_hash); it != fs_cache_.end()) {
+                active_fs = it->second;
+            } else {
+                std::string ps_hlsl = PixelHlsl(pk);
+                std::string ps_msl = TranslatePixelHlslToMsl(ps_hlsl, pk);
+                active_fs = GetOrCompileFunction(ps_hash, ps_msl, @"fs_main", fs_cache_);
+            }
         }
 
         const bool use_translated = (active_vs != nil && active_fs != nil);
@@ -419,10 +434,13 @@ public:
         id<MTLDepthStencilState> dss = GetDepthStencil(z_en, z_wr, z_fn);
 
         const size_t vb_bytes = verts.size() * sizeof(MetalVertex);
-        id<MTLBuffer> vb = [device_ newBufferWithBytes:verts.data()
-                                               length:vb_bytes
-                                              options:MTLResourceStorageModeShared];
-        if (!vb) return;
+        id<MTLBuffer> vb = nil;
+        if (vb_bytes > 4096) {
+            vb = [device_ newBufferWithBytes:verts.data()
+                                      length:vb_bytes
+                                     options:MTLResourceStorageModeShared];
+            if (!vb) return;
+        }
 
         [encoder_ setRenderPipelineState:pso];
         if (dss) [encoder_ setDepthStencilState:dss];
@@ -430,7 +448,11 @@ public:
             [encoder_ setFragmentTexture:stage_tex[t] atIndex:t];
             [encoder_ setFragmentSamplerState:sampler_ atIndex:t];
         }
-        [encoder_ setVertexBuffer:vb offset:0 atIndex:0];
+        if (vb) {
+            [encoder_ setVertexBuffer:vb offset:0 atIndex:0];
+        } else {
+            [encoder_ setVertexBytes:verts.data() length:vb_bytes atIndex:0];
+        }
 
         if (use_translated) {
             DrawConstants dc{};
@@ -534,6 +556,8 @@ public:
             }
             has_clear_ = false;
             has_depth_clear_ = false;
+            clear_color_ = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+            clear_depth_ = 1.0;
         }
     }
 
@@ -775,16 +799,101 @@ private:
         return dss;
     }
 
+    static void DecompressBcBlockColor(const uint8_t* blk, uint8_t c[4][4], bool bc1_alpha) {
+        uint16_t c0 = uint16_t(blk[0]) | (uint16_t(blk[1]) << 8);
+        uint16_t c1 = uint16_t(blk[2]) | (uint16_t(blk[3]) << 8);
+        auto rgb565 = [](uint16_t v, uint8_t out[4]) {
+            uint8_t r = uint8_t((v >> 11) & 31);
+            uint8_t g = uint8_t((v >> 5) & 63);
+            uint8_t b = uint8_t(v & 31);
+            out[0] = uint8_t((b << 3) | (b >> 2));
+            out[1] = uint8_t((g << 2) | (g >> 4));
+            out[2] = uint8_t((r << 3) | (r >> 2));
+            out[3] = 255;
+        };
+        rgb565(c0, c[0]);
+        rgb565(c1, c[1]);
+        if (c0 > c1 || !bc1_alpha) {
+            for (int i = 0; i < 3; ++i) {
+                c[2][i] = uint8_t((2 * c[0][i] + c[1][i] + 1) / 3);
+                c[3][i] = uint8_t((c[0][i] + 2 * c[1][i] + 1) / 3);
+            }
+            c[2][3] = c[3][3] = 255;
+        } else {
+            for (int i = 0; i < 3; ++i) c[2][i] = uint8_t((c[0][i] + c[1][i]) / 2);
+            c[2][3] = 255;
+            c[3][0] = c[3][1] = c[3][2] = c[3][3] = 0;
+        }
+    }
+
+    static void DecompressBcToBgra8(Host host, uint32_t w, uint32_t h, const uint8_t* src,
+                                    std::vector<uint8_t>& out, uint32_t& pitch) {
+        pitch = w * 4;
+        out.assign(size_t(pitch) * h, 0);
+        const uint32_t bw = std::max(1u, (w + 3) / 4);
+        const uint32_t bh = std::max(1u, (h + 3) / 4);
+        const uint32_t blk_bytes = (host == Host::BC1) ? 8 : 16;
+        for (uint32_t by = 0; by < bh; ++by) {
+            for (uint32_t bx = 0; bx < bw; ++bx) {
+                const uint8_t* blk = src + (size_t(by) * bw + bx) * blk_bytes;
+                const uint8_t* cblk = (host == Host::BC1) ? blk : (blk + 8);
+                uint8_t pal[4][4];
+                DecompressBcBlockColor(cblk, pal, host == Host::BC1);
+                uint32_t lut = uint32_t(cblk[4]) | (uint32_t(cblk[5]) << 8) |
+                               (uint32_t(cblk[6]) << 16) | (uint32_t(cblk[7]) << 24);
+                uint8_t a_pal[8] = {};
+                uint64_t a_lut = 0;
+                if (host == Host::BC3) {
+                    a_pal[0] = blk[0];
+                    a_pal[1] = blk[1];
+                    if (a_pal[0] > a_pal[1]) {
+                        for (int i = 1; i <= 6; ++i)
+                            a_pal[i + 1] = uint8_t(((7 - i) * a_pal[0] + i * a_pal[1] + 3) / 7);
+                    } else {
+                        for (int i = 1; i <= 4; ++i)
+                            a_pal[i + 1] = uint8_t(((5 - i) * a_pal[0] + i * a_pal[1] + 2) / 5);
+                        a_pal[6] = 0;
+                        a_pal[7] = 255;
+                    }
+                    for (int i = 0; i < 6; ++i) a_lut |= uint64_t(blk[2 + i]) << (i * 8);
+                }
+                for (uint32_t py = 0; py < 4; ++py) {
+                    const uint32_t y = by * 4 + py;
+                    if (y >= h) continue;
+                    for (uint32_t px = 0; px < 4; ++px) {
+                        const uint32_t x = bx * 4 + px;
+                        if (x >= w) continue;
+                        const uint32_t idx = py * 4 + px;
+                        uint8_t* dst = &out[(size_t(y) * w + x) * 4];
+                        const uint8_t* c = pal[(lut >> (idx * 2)) & 3];
+                        dst[0] = c[0];
+                        dst[1] = c[1];
+                        dst[2] = c[2];
+                        if (host == Host::BC1) {
+                            dst[3] = c[3];
+                        } else if (host == Host::BC2) {
+                            const uint8_t a4 = (blk[idx >> 1] >> ((idx & 1) * 4)) & 0xF;
+                            dst[3] = uint8_t((a4 << 4) | a4);
+                        } else {
+                            dst[3] = a_pal[(a_lut >> (idx * 3)) & 7];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va, uint32_t simple_palette,
                                   TextureDesc* out_desc = nullptr) {
         TextureDesc d;
         if (!Describe(header_va, d) || !d.data || !d.width || !d.height) return nil;
         if (out_desc) *out_desc = d;
         const auto& fi = Format(d.format);
+        const bool is_bc = (fi.host == Host::BC1 || fi.host == Host::BC2 || fi.host == Host::BC3);
         MTLPixelFormat mtl_fmt = MTLPixelFormatBGRA8Unorm;
         if (fi.host == Host::R32F) mtl_fmt = MTLPixelFormatR32Float;
         else if (fi.host == Host::R16Unorm) mtl_fmt = MTLPixelFormatR16Unorm;
-        else if (fi.host != Host::BGRA8) return nil;
+        else if (fi.host != Host::BGRA8 && !is_bc) return nil;
 
         constexpr uint32_t kFmtP8 = 0x0B;
         uint32_t pal_data_va = 0;
@@ -796,7 +905,18 @@ private:
             }
         }
 
-        const uint64_t epoch = DirtyEpoch(d.data);
+        const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+        uint64_t epoch = DirtyEpoch(d.data);
+        if (d.linear && !is_bc) {
+            // Sample a few locations of linear textures (e.g. Bink YUY2 video frames) so in-place CPU updates
+            // are detected even when updated without Lock/BlockUntilNotBusy, and skip uninitialized 0x00/0xFF frames.
+            const uint32_t total = d.pitch * d.height;
+            if (total >= 64) {
+                const uint64_t s0 = Hash(guest, 64);
+                const uint64_t s1 = Hash(guest + total / 2, std::min<uint32_t>(64, total - total / 2));
+                epoch ^= s0 ^ (s1 * 0x9E3779B97F4A7C15ull);
+            }
+        }
         const uint64_t cache_key = (uint64_t(pal_data_va) << 32) | d.data;
         auto& entry = tex_cache_[cache_key];
         if (entry.tex && entry.format == d.format && entry.w == d.width && entry.h == d.height &&
@@ -804,12 +924,35 @@ private:
             return entry.tex;
         }
 
-        const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
         const uint32_t* pal = pal_data_va ? static_cast<const uint32_t*>(kernel::HostPtr(pal_data_va)) : nullptr;
         std::vector<uint8_t> decoded;
         uint32_t pitch = 0;
         DecodeLevel(d, 0, 0, guest, pal, decoded, pitch);
         if (decoded.empty() || !pitch) return nil;
+        if (is_bc) {
+            std::vector<uint8_t> bgra;
+            uint32_t bgra_pitch = 0;
+            DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
+            decoded = std::move(bgra);
+            pitch = bgra_pitch;
+        } else if (d.format == 0x24 || d.format == 0x25) {
+            // Guard against uninitialized YUY2/UYVY buffers filled with 0x00 or 0xFF before Bink's first frame,
+            // which otherwise decode to neon green (0,0,0,0) or neon pink/magenta (FF,FF,FF,FF).
+            const uint32_t total = d.pitch * d.height;
+            if (total >= 16) {
+                uint32_t first_dw = 0, mid_dw = 0;
+                std::memcpy(&first_dw, guest, 4);
+                std::memcpy(&mid_dw, guest + (total / 2) & ~3u, 4);
+                if ((first_dw == 0 && mid_dw == 0) || (first_dw == 0xFFFFFFFFu && mid_dw == 0xFFFFFFFFu)) {
+                    for (size_t i = 0; i + 3 < decoded.size(); i += 4) {
+                        decoded[i + 0] = 0;
+                        decoded[i + 1] = 0;
+                        decoded[i + 2] = 0;
+                        decoded[i + 3] = 255;
+                    }
+                }
+            }
+        }
 
         MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtl_fmt
                                                                                       width:d.width
@@ -847,12 +990,13 @@ private:
         }
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable_.texture;
-        pass.colorAttachments[0].loadAction = has_clear_ ? MTLLoadActionClear : MTLLoadActionLoad;
+        // A freshly acquired CAMetalDrawable has undefined contents on iOS TBDR GPUs; always clear at pass start.
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].clearColor = clear_color_;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         if (depth_tex_) {
             pass.depthAttachment.texture = depth_tex_;
-            pass.depthAttachment.loadAction = has_depth_clear_ ? MTLLoadActionClear : MTLLoadActionLoad;
+            pass.depthAttachment.loadAction = MTLLoadActionClear;
             pass.depthAttachment.clearDepth = clear_depth_;
             pass.depthAttachment.storeAction = MTLStoreActionDontCare;
         }

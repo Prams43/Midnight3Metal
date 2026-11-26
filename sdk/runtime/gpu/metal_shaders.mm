@@ -51,7 +51,7 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "ddy(", "dfdy(");
 
     // `(float4)(a < b)` -> `float4(a < b)`
-    s = std::regex_replace(s, std::regex(R"(\(float4\)\s*\()"), "float4(");
+    s = std::regex_replace(s, std::regex(R"(\(float([234])\)\s*\()"), "float$1(");
 
     // Fix `mac_mul`: in MSL `(a == 0 || b == 0)` on float4 is invalid; use select
     ReplaceAll(s,
@@ -77,6 +77,8 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "max(s.x, 0)", "max(s.x, 0.0f)");
     ReplaceAll(s, "max(s.y, 0)", "max(s.y, 0.0f)");
     ReplaceAll(s, "clamp(z, 0, mx)", "clamp(z, 0.0f, mx)");
+    ReplaceAll(s, ", -1, 1)", ", -1.0f, 1.0f)");
+    s = std::regex_replace(s, std::regex(R"(\bmax\(([^,()]+),\s*0\))"), "max($1, 0.0f)");
     ReplaceAll(s, "return (b - (b >= 128 ? hi : lo)) / d;", "return (b - select(float3(lo), float3(hi), b >= 128.0f)) / d;");
 
     // Texture sampling methods
