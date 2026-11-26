@@ -28,10 +28,18 @@ static void MC3CrashHandler(int sig, siginfo_t* info, void*) {
     if (entered.exchange(1)) _exit(128 + sig);
     const uintptr_t addr = reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr);
     const uintptr_t base = reinterpret_cast<uintptr_t>(mem::Base());
+    const uint32_t guest_va = (base && addr >= base && addr < base + 0x100000000ull) ? uint32_t(addr - base) : 0u;
     LOGE("CRASH: signal=%d code=%d addr=%p guest_va=%08X base=%p slide=%p", sig, info ? info->si_code : 0,
-         reinterpret_cast<void*>(addr),
-         (base && addr >= base && addr < base + 0x100000000ull) ? uint32_t(addr - base) : 0u,
+         reinterpret_cast<void*>(addr), guest_va,
          reinterpret_cast<void*>(base), reinterpret_cast<void*>(_dyld_get_image_vmaddr_slide(0)));
+    if (guest_va) {
+        mem::RegionInfo ri{};
+        const bool qok = mem::QueryVirtual(guest_va, ri);
+        const mem::Stats ms = mem::Query();
+        LOGE("CRASH: vm committed=%d query_ok=%d base=%08X alloc=%08X size=%08X state=%08X prot=%X | phys avail=%u/%u contig=%u sys=%u virt=%u",
+             mem::IsCommitted(guest_va) ? 1 : 0, qok ? 1 : 0, ri.base, ri.alloc_base, ri.size, ri.state, ri.protect,
+             ms.available_pages, ms.total_pages, ms.contiguous_used, ms.system_used, ms.virtual_committed);
+    }
     if (kernel::Thread* t = kernel::Current(); t && t->ctx) kernel::LogGuestStack(*t->ctx, 64);
     void* frames[40];
     const int n = backtrace(frames, 40);

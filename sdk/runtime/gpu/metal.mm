@@ -254,11 +254,17 @@ public:
             if (rt_va) offscreen_rt_data_.insert(rt_va);
             return true;
         }
-        // Seed the primary swapchain render target data address on the first full-size target
-        if (rt_va && main_rt_data_.empty()) {
-            main_rt_data_.insert(rt_va);
+        if (rt_va && main_rt_data_.find(rt_va) != main_rt_data_.end()) {
+            return false;
         }
-        if (rt_va && !main_rt_data_.empty() && main_rt_data_.find(rt_va) == main_rt_data_.end()) {
+        // d3d8 rotates up to 3 full-size swapchain buffers; wait until all 3 are seen before
+        // treating another guest-sized target as an offscreen render target.
+        if (rt_va && main_rt_data_.size() < 3) {
+            main_rt_data_.insert(rt_va);
+            offscreen_rt_data_.erase(rt_va);
+            return false;
+        }
+        if (rt_va) {
             offscreen_rt_data_.insert(rt_va);
             return true;
         }
@@ -267,9 +273,10 @@ public:
 
     void Clear(const State& s, uint32_t, const uint8_t*, uint32_t flags, uint32_t color, float z, uint32_t) override {
         if (IsOffscreenTarget(s)) return;
-        // If we already encoded draws in this frame, only apply mid-frame depth clears or full target clears before draws
-        if (encoder_) return;
-        if (flags & kClearTarget) {
+        const bool clear_c = (flags & kClearTarget) != 0;
+        const bool clear_z = (flags & kClearZ) != 0;
+        if (!clear_c && !clear_z) return;
+        if (clear_c) {
             const double a = ((color >> 24) & 0xFF) / 255.0;
             const double r = ((color >> 16) & 0xFF) / 255.0;
             const double g = ((color >> 8) & 0xFF) / 255.0;
@@ -277,9 +284,15 @@ public:
             clear_color_ = MTLClearColorMake(r, g, b, a);
             has_clear_ = true;
         }
-        if (flags & kClearZ) {
+        if (clear_z) {
             clear_depth_ = double(z);
             has_depth_clear_ = true;
+        }
+        // Mid-frame clear (e.g. Z-clear before Flash HUD/text): split the render pass so
+        // subsequent draws do not get depth-culled by the 3D scene's depth buffer.
+        if (encoder_) {
+            [encoder_ endEncoding];
+            encoder_ = nil;
         }
     }
 
@@ -608,8 +621,10 @@ public:
 
     void Present(const Surface& front) override {
         if (!layer_ || !queue_) return;
-        if (front.data && main_rt_data_.size() < 8) {
-            main_rt_data_.insert(mem::VirtualFromPhysical(front.data));
+        if (front.data) {
+            const uint32_t va = mem::VirtualFromPhysical(front.data);
+            if (main_rt_data_.size() < 8) main_rt_data_.insert(va);
+            offscreen_rt_data_.erase(va);
         }
         @autoreleasepool {
             if (!encoder_ && has_clear_) EnsureEncoder();
@@ -1060,8 +1075,11 @@ private:
 
     bool EnsureEncoder() {
         if (encoder_) return true;
-        drawable_ = [layer_ nextDrawable];
-        if (!drawable_) return false;
+        const bool first_pass = (cmd_buf_ == nil);
+        if (!drawable_) {
+            drawable_ = [layer_ nextDrawable];
+            if (!drawable_) return false;
+        }
         const NSUInteger dw = drawable_.texture.width;
         const NSUInteger dh = drawable_.texture.height;
         if (!depth_tex_ || depth_tex_.width != dw || depth_tex_.height != dh) {
@@ -1073,29 +1091,35 @@ private:
             dd.usage = MTLTextureUsageRenderTarget;
             depth_tex_ = [device_ newTextureWithDescriptor:dd];
         }
-        cmd_buf_ = [queue_ commandBuffer];
         if (!cmd_buf_) {
-            drawable_ = nil;
-            return false;
+            cmd_buf_ = [queue_ commandBuffer];
+            if (!cmd_buf_) {
+                drawable_ = nil;
+                return false;
+            }
         }
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable_.texture;
-        // A freshly acquired CAMetalDrawable has undefined contents on iOS TBDR GPUs; always clear at pass start.
-        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        // A freshly acquired CAMetalDrawable has undefined contents on iOS TBDR GPUs; always clear on first pass.
+        pass.colorAttachments[0].loadAction = (first_pass || has_clear_) ? MTLLoadActionClear : MTLLoadActionLoad;
         pass.colorAttachments[0].clearColor = clear_color_;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         if (depth_tex_) {
             pass.depthAttachment.texture = depth_tex_;
-            pass.depthAttachment.loadAction = MTLLoadActionClear;
+            pass.depthAttachment.loadAction = (first_pass || has_depth_clear_) ? MTLLoadActionClear : MTLLoadActionLoad;
             pass.depthAttachment.clearDepth = clear_depth_;
-            pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+            pass.depthAttachment.storeAction = MTLStoreActionStore;
         }
         encoder_ = [cmd_buf_ renderCommandEncoderWithDescriptor:pass];
         if (!encoder_) {
-            cmd_buf_ = nil;
-            drawable_ = nil;
+            if (first_pass) {
+                cmd_buf_ = nil;
+                drawable_ = nil;
+            }
             return false;
         }
+        has_clear_ = false;
+        has_depth_clear_ = false;
         return true;
     }
 

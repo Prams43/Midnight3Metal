@@ -353,23 +353,27 @@ KERNEL_EXPORT(305, RtlTimeToTimeFields, 2) {
 // memory
 
 KERNEL_EXPORT(184, NtAllocateVirtualMemory, 5) {
-    uint32_t base = R32(a[0]), size = R32(a[2]);
+    uint32_t req_base = R32(a[0]), req_size = R32(a[2]);
+    uint32_t base = req_base, size = req_size;
     uint32_t st = mem::AllocateVirtual(base, size, a[3], a[4]);
     if (st == 0) {
         W32(a[0], base);
         W32(a[2], size);
+        LOG_FIRST(32, "NtAllocateVirtualMemory req=%08X+%X -> %08X+%X type=%X prot=%X", req_base, req_size, base, size, a[3], a[4]);
     } else {
-        LOGW("NtAllocateVirtualMemory %08X+%X type %X failed %08X", R32(a[0]), R32(a[2]), a[3], st);
+        LOGW("NtAllocateVirtualMemory %08X+%X type %X failed %08X", req_base, req_size, a[3], st);
     }
     return st;
 }
 
 KERNEL_EXPORT(199, NtFreeVirtualMemory, 3) {
-    uint32_t base = R32(a[0]), size = R32(a[1]);
+    uint32_t req_base = R32(a[0]), req_size = R32(a[1]);
+    uint32_t base = req_base, size = req_size;
     uint32_t st = mem::FreeVirtual(base, size, a[2]);
     if (st == 0) {
         W32(a[0], base);
         W32(a[1], size);
+        LOG_FIRST(32, "NtFreeVirtualMemory req=%08X+%X -> %08X+%X type=%X", req_base, req_size, base, size, a[2]);
     }
     return st;
 }
