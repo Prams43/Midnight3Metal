@@ -1,5 +1,18 @@
 # Midnight Club 3: DUB Edition Remix - iOS Static Recompilation Port
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Apple_iOS-arm64-007AFF?style=flat&logo=apple&logoColor=white" alt="Apple iOS arm64" />
+  <img src="https://img.shields.io/badge/renderer-Metal-6E54F0?style=flat" alt="Renderer Metal" />
+  <img src="https://img.shields.io/badge/x86-static_recompilation-F59E0B?style=flat" alt="x86 Static Recompilation" />
+  <img src="https://img.shields.io/badge/iOS_target-13.0%2B-007AFF?style=flat" alt="iOS Target 13.0+" />
+  <br />
+  <img src="https://img.shields.io/badge/platform-iPhone_%2F_iPad-007AFF?style=flat" alt="Platform iPhone / iPad" />
+  <img src="https://img.shields.io/badge/Xbox_XDK-5849-107C10?style=flat" alt="Xbox XDK 5849" />
+  <img src="https://img.shields.io/badge/audio-DirectSound_%2F_AudioQueue-14B8A6?style=flat" alt="Audio DirectSound / AudioQueue" />
+  <img src="https://img.shields.io/badge/input-Touch_HUD_%2F_SDL3-22C55E?style=flat" alt="Input Touch HUD / SDL3" />
+  <img src="https://img.shields.io/badge/game_data-not_included-E11D48?style=flat" alt="Game Data Not Included" />
+</p>
+
 An experimental **iOS (ARM64 / Metal)** port of the original Xbox **Midnight Club 3: DUB Edition Remix** static recompilation project (`mc3-ios-work`).
 
 Instead of running an x86 emulator or JIT, the original Xbox executable (`default.xbe`) is statically recompiled into portable C++ ahead of time and linked against a native iOS runtime powered by **Apple Metal**, **Audio Queue Services**, and **UIKit** touch/controller input.
