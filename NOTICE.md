@@ -53,6 +53,5 @@ from it.
 
 ## This project's own code
 
-No licence has been chosen yet for the code under `src/`, `tools/`, `config/`, `docs/` and the scripts, so by default all
-rights are reserved by its authors. Decide on one before the repository is made public. The SDK keeps its own MIT licence
-either way.
+This project's iOS port and original code are licensed under the **GNU General Public License v3.0** (`LICENSE`).
+The modified Xbox XBE Recomp SDK under `sdk/` keeps its own MIT licence (`sdk/LICENSE`) and third-party notices (`sdk/THIRD_PARTY.txt`).
