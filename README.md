@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/game_data-not_included-E11D48?style=flat" alt="Game Data Not Included" />
 </p>
 
-**MidniteMetal** is a native **iOS (ARM64 / Metal)** static recompilation port of the original Xbox **Midnight Club 3: DUB Edition Remix**.
+**Midnight3Metal** is a native **iOS (ARM64 / Metal)** static recompilation port of the original Xbox **Midnight Club 3: DUB Edition Remix**.
 
 Instead of running an x86 emulator or JIT, the original Xbox executable (`default.xbe`) is statically recompiled into portable C++ ahead of time and linked against a native iOS runtime powered by **Apple Metal**, **Audio Queue Services**, and **UIKit** touch/controller input.
 
