@@ -1,4 +1,8 @@
-# Midnight3Metal
+<p align="center">
+  <img src="ios-app/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png" width="180" alt="Midnight3Metal Logo" />
+</p>
+
+<h1 align="center">Midnight3Metal</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Apple_iOS-arm64-007AFF?style=flat&logo=apple&logoColor=white" alt="Apple iOS arm64" />
@@ -30,8 +34,9 @@ Instead of running an x86 emulator or JIT, the original Xbox executable (`defaul
   - Triple-buffered transient upload ring buffer (`MTLBuffer`), zero-copy tightly-packed vertex layouts, native triangle-strip/index submission, and per-encoder state caching for smooth 50–60 FPS gameplay without lowering visual quality.
 - **Xbox DirectSound & XACT Software Mixer (`sdk/runtime/xdk/dsound.cpp`)**
   - Full HLE DirectSound buffer & stream mixer running on Apple Audio Queue Services (`48 kHz` stereo float) with ADPCM/PCM decoding, 3D audio attenuation, mixbins, envelopes, and proper `IDirectSoundStream::FlushEx` / envelope-flush lifecycle handling.
-- **Native Mobile Racing Touch Controls & Gamepad Support (`sdk/runtime/app/ios_touch_controls.mm`)**
+- **Native Mobile Racing Touch Controls, In-Game HUD Editor & Gamepad Support (`sdk/runtime/app/ios_touch_controls.mm`)**
   - **Auto-switching HUD** between **Driving Mode** (analog steering or toggleable left/right arrows, `GAS`, `BRAKE`, `NOS`, `DRIFT`, `SPEC`, `2W`, plus top utility pills `MAP`, `CAM`, `REAR`, `FLASH`, pause, and next track) and **Menu / Garage Mode** (`OK`, `BACK`, `OPTS`, `VIEW`, `TAB`, `ZOOM`, `START`, D-pad).
+  - **In-game HUD & Controls Editor (`⚙`)**: drag any button, steering control, or FPS pill to reposition it, resize individual buttons or global HUD scale, adjust HUD opacity, toggle the FPS counter, and save layouts automatically across sessions.
   - Built-in real-time color-coded **FPS counter** pill on the top HUD bar.
   - Supports physical Bluetooth / MFi / Xbox / PlayStation controllers via SDL3.
 - **128 MB Guest Memory Mode & Offline XNet Stubs**

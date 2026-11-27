@@ -427,8 +427,95 @@ bool AssembleConverted(const State& s, const Inputs& inputs, const DrawRange& d,
             const uint8_t* p = src + size_t(d.first_vertex) * stride;
             float* dst = out.vertices.data() + size_t(k) * 4;
             const size_t dst_step = size_t(nregs) * 4;
-            for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
-                Convert(in.type, p, dst);
+            // Hoist the Xbox vertex format dispatch outside the per-vertex loop so
+            // ARM64/Clang keeps tight branch-free loops for the hot MC3 formats.
+            constexpr float kInv255 = 1.0f / 255.0f;
+            constexpr float kInv32767 = 1.0f / 32767.0f;
+            constexpr float kInv1023 = 1.0f / 1023.0f;
+            constexpr float kInv511 = 1.0f / 511.0f;
+            switch (in.type) {
+                case 0x32:  // FLOAT3
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        std::memcpy(dst, p, 12);
+                        dst[3] = 1.0f;
+                    }
+                    break;
+                case 0x22:  // FLOAT2
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        std::memcpy(dst, p, 8);
+                        dst[2] = 0.0f;
+                        dst[3] = 1.0f;
+                    }
+                    break;
+                case 0x42:  // FLOAT4
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        std::memcpy(dst, p, 16);
+                    }
+                    break;
+                case 0x40:  // D3DCOLOR (BGRA8)
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        dst[0] = p[2] * kInv255;
+                        dst[1] = p[1] * kInv255;
+                        dst[2] = p[0] * kInv255;
+                        dst[3] = p[3] * kInv255;
+                    }
+                    break;
+                case 0x16:  // NORMPACKED3 (11-11-10 signed)
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        uint32_t pk;
+                        std::memcpy(&pk, p, 4);
+                        const int32_t x = int32_t(pk << 21) >> 21;
+                        const int32_t y = int32_t(pk << 10) >> 21;
+                        const int32_t z = int32_t(pk) >> 22;
+                        dst[0] = std::max(x * kInv1023, -1.0f);
+                        dst[1] = std::max(y * kInv1023, -1.0f);
+                        dst[2] = std::max(z * kInv511, -1.0f);
+                        dst[3] = 1.0f;
+                    }
+                    break;
+                case 0x21:  // NORMSHORT2
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        int16_t s16[2];
+                        std::memcpy(s16, p, 4);
+                        dst[0] = std::max(s16[0] * kInv32767, -1.0f);
+                        dst[1] = std::max(s16[1] * kInv32767, -1.0f);
+                        dst[2] = 0.0f;
+                        dst[3] = 1.0f;
+                    }
+                    break;
+                case 0x31:  // NORMSHORT3
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        int16_t s16[3];
+                        std::memcpy(s16, p, 6);
+                        dst[0] = std::max(s16[0] * kInv32767, -1.0f);
+                        dst[1] = std::max(s16[1] * kInv32767, -1.0f);
+                        dst[2] = std::max(s16[2] * kInv32767, -1.0f);
+                        dst[3] = 1.0f;
+                    }
+                    break;
+                case 0x41:  // NORMSHORT4
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        int16_t s16[4];
+                        std::memcpy(s16, p, 8);
+                        dst[0] = std::max(s16[0] * kInv32767, -1.0f);
+                        dst[1] = std::max(s16[1] * kInv32767, -1.0f);
+                        dst[2] = std::max(s16[2] * kInv32767, -1.0f);
+                        dst[3] = std::max(s16[3] * kInv32767, -1.0f);
+                    }
+                    break;
+                case 0x44:  // PBYTE4
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        dst[0] = p[0] * kInv255;
+                        dst[1] = p[1] * kInv255;
+                        dst[2] = p[2] * kInv255;
+                        dst[3] = p[3] * kInv255;
+                    }
+                    break;
+                default:
+                    for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                        Convert(in.type, p, dst);
+                    }
+                    break;
             }
         } else {
             float* dst = out.vertices.data() + size_t(k) * 4;

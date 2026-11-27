@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -1112,7 +1113,9 @@ private:
         if (auto it = cache.find(hash); it != cache.end()) return it->second;
         @autoreleasepool {
             NSError* err = nil;
-            id<MTLLibrary> lib = [device_ newLibraryWithSource:@(msl.c_str()) options:nil error:&err];
+            MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+            opts.fastMathEnabled = YES;
+            id<MTLLibrary> lib = [device_ newLibraryWithSource:@(msl.c_str()) options:opts error:&err];
             if (!lib) {
                 if (failed_shaders_.insert(hash).second) {
                     LOGE("metal: MSL compile failed (%s): %s", [entry UTF8String], [[err localizedDescription] UTF8String]);
@@ -1424,7 +1427,7 @@ private:
     static void DecompressBcToBgra8(gpu::Host host, uint32_t w, uint32_t h, const uint8_t* src,
                                     std::vector<uint8_t>& out, uint32_t& pitch) {
         pitch = w * 4;
-        out.assign(size_t(pitch) * h, 0);
+        out.resize(size_t(pitch) * h);
         const uint32_t bw = std::max(1u, (w + 3) / 4);
         const uint32_t bh = std::max(1u, (h + 3) / 4);
         const uint32_t blk_bytes = (host == gpu::Host::BC1) ? 8 : 16;
@@ -1780,8 +1783,8 @@ private:
                     pitch = bgra_pitch;
                 }
             } else if (d.format == 0x24 || d.format == 0x25) {
-                // Guard against uninitialized YUY2/UYVY pixels (all-0x00 -> bright green, all-0xFF -> bright pink/purple)
-                // before or between Bink frames. Valid studio-range BT.601 black is 0x80108010, never 0x00000000 or 0xFFFFFFFF.
+                // Fast whole-frame blank check for uniformly filled uninitialized YUY2/UYVY buffers
+                // (per-pixel BT.601 studio-range out-of-gamut sanitization already runs inside DecodeLevel).
                 const uint32_t yuv_total = d.pitch * d.height;
                 if (yuv_total >= 64) {
                     uint32_t dw0 = 0, dw1 = 0, dw2 = 0, dw3 = 0;
@@ -1789,26 +1792,20 @@ private:
                     std::memcpy(&dw1, guest + ((yuv_total / 3) & ~3u), 4);
                     std::memcpy(&dw2, guest + ((yuv_total / 2) & ~3u), 4);
                     std::memcpy(&dw3, guest + (((yuv_total * 2) / 3) & ~3u), 4);
-                    const bool uniform_fill = (dw0 == dw1 && dw1 == dw2 && dw2 == dw3) &&
-                        (dw0 == 0u || dw0 == 0xFFFFFFFFu || (dw0 & 0xFFFFu) == (dw0 >> 16));
-                    if (uniform_fill) {
-                        for (size_t i = 0; i + 3 < scratch_decode_.size(); i += 4) {
-                            scratch_decode_[i + 0] = 0;
-                            scratch_decode_[i + 1] = 0;
-                            scratch_decode_[i + 2] = 0;
-                            scratch_decode_[i + 3] = 255;
-                        }
-                    } else {
-                        for (uint32_t y = 0; y < d.height; ++y) {
-                            const uint8_t* row = guest + size_t(y) * d.pitch;
-                            for (uint32_t x = 0; x + 1 < d.width; x += 2) {
-                                uint32_t pair = 0;
-                                std::memcpy(&pair, row + size_t(x) * 2, 4);
-                                if (pair == 0u || pair == 0xFFFFFFFFu) {
-                                    uint8_t* o = &scratch_decode_[(size_t(y) * d.width + x) * 4];
-                                    o[0] = o[1] = o[2] = 0; o[3] = 255;
-                                    o[4] = o[5] = o[6] = 0; o[7] = 255;
-                                }
+                    if (dw0 == dw1 && dw1 == dw2 && dw2 == dw3) {
+                        const bool yuy2 = (d.format == 0x24);
+                        const uint8_t b0 = dw0 & 0xFF, b1 = (dw0 >> 8) & 0xFF, b2 = (dw0 >> 16) & 0xFF, b3 = (dw0 >> 24) & 0xFF;
+                        const int y0 = yuy2 ? b0 : b1, u = yuy2 ? b1 : b0, y1 = yuy2 ? b2 : b3, v = yuy2 ? b3 : b2;
+                        const bool studio_black = (y0 <= 20 && y1 <= 20);
+                        const bool bad_pattern = (dw0 == 0u || dw0 == 0xFFFFFFFFu || dw0 == 0xFF000000u ||
+                                                  dw0 == 0x000000FFu || dw0 == 0xFF00FF00u || dw0 == 0x00FF00FFu ||
+                                                  std::abs(u - 128) > 36 || std::abs(v - 128) > 36);
+                        if (studio_black && bad_pattern) {
+                            for (size_t i = 0; i + 3 < scratch_decode_.size(); i += 4) {
+                                scratch_decode_[i + 0] = 0;
+                                scratch_decode_[i + 1] = 0;
+                                scratch_decode_[i + 2] = 0;
+                                scratch_decode_[i + 3] = 255;
                             }
                         }
                     }

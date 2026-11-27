@@ -357,6 +357,12 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         uint32_t type = R32(res) & 0x70000;  // 0x40000 texture, 0x50000 surface
         if (type == 0x40000 || type == 0x50000) {
+            const uint32_t fmt = (R32(res + 12) >> 8) & 0xFF;
+            if (fmt == 0x24 || fmt == 0x25) {
+                // Wait for the render thread to finish decoding the previous YUY2/UYVY Bink frame
+                // before the guest overwrites the texture in place (prevents pink/green torn frames).
+                g_backend->WaitResource(res);
+            }
             uint32_t data = mem::VirtualFromPhysical(R32(res + 4));
             // perf diagnostic: who blocks on which surface, once each
             static std::unordered_set<uint32_t> seen;
@@ -1192,27 +1198,31 @@ void Walk(uint32_t end) {
             ApplyVisibilityMethod(m, v);
             {
                 static uint32_t raw_state_shown = 0, raw_surface_shown = 0;
-                uint32_t state_object = R32(0x557ED0);
-                bool frontend = state_object >= 0x80000000u && state_object < mem::PhysicalEnd() &&
-                                R32(state_object + 4) == 7;
-                bool surface = m >= 0x200 && m <= 0x214;
-                bool matrix = (m >= 0x440 && m < 0x6C0) || (m >= 0xA20 && m < 0xA30) ||
-                              (m >= 0xAF0 && m < 0xB00);
-                if (surface && raw_surface_shown++ < 512)
-                    LOGE("MC3 raw surface: at=%08X method=%04X value=%08X", p, m, v);
-                if (frontend && matrix && raw_state_shown++ < 4096)
-                    LOGE("MC3 raw state: at=%08X method=%04X value=%08X float=%g", p, m, v, f);
+                if (raw_surface_shown < 512 || raw_state_shown < 4096) {
+                    uint32_t state_object = R32(0x557ED0);
+                    bool frontend = state_object >= 0x80000000u && state_object < mem::PhysicalEnd() &&
+                                    R32(state_object + 4) == 7;
+                    bool surface = m >= 0x200 && m <= 0x214;
+                    bool matrix = (m >= 0x440 && m < 0x6C0) || (m >= 0xA20 && m < 0xA30) ||
+                                  (m >= 0xAF0 && m < 0xB00);
+                    if (surface && raw_surface_shown++ < 512)
+                        LOGE("MC3 raw surface: at=%08X method=%04X value=%08X", p, m, v);
+                    if (frontend && matrix && raw_state_shown++ < 4096)
+                        LOGE("MC3 raw state: at=%08X method=%04X value=%08X float=%g", p, m, v, f);
+                }
             }
             {
                 static uint32_t shown = 0;
-                uint32_t state_object = R32(0x557ED0);
-                bool frontend = state_object >= 0x80000000u && state_object < mem::PhysicalEnd() &&
-                                R32(state_object + 4) == 7;
-                bool vertex = m == 0x17FC || m == 0x1818 || (m >= 0x1880 && m < 0x1900) ||
-                              (m >= 0x1940 && m < 0x1980) || (m >= 0x1A00 && m < 0x1B00) ||
-                              (m >= 0x1500 && m < 0x1528);
-                if (frontend && !vertex && shown++ < 512)
-                    LOGE("MC3 frontend push: at=%08X method=%04X value=%08X", p, m, v);
+                if (shown < 512) {
+                    uint32_t state_object = R32(0x557ED0);
+                    bool frontend = state_object >= 0x80000000u && state_object < mem::PhysicalEnd() &&
+                                    R32(state_object + 4) == 7;
+                    bool vertex = m == 0x17FC || m == 0x1818 || (m >= 0x1880 && m < 0x1900) ||
+                                  (m >= 0x1940 && m < 0x1980) || (m >= 0x1A00 && m < 0x1B00) ||
+                                  (m >= 0x1500 && m < 0x1528);
+                    if (frontend && !vertex && shown++ < 512)
+                        LOGE("MC3 frontend push: at=%08X method=%04X value=%08X", p, m, v);
+                }
             }
             if (m == 0x17FC) {  // begin/end, 0 ends
                 if (v) {

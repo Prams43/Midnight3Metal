@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -359,20 +360,53 @@ void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint
     uint32_t bpp = f.bits / 8;
     if (d.format == 0x24 || d.format == 0x25) {
         // packed 4:2:2, two pixels share chroma
-        bool yuy2 = d.format == 0x24;
-        for (uint32_t y = 0; y < h; y++)
+        const bool yuy2 = d.format == 0x24;
+        for (uint32_t y = 0; y < h; y++) {
+            const uint8_t* row = src + size_t(y) * d.pitch;
+            uint8_t* dst_row = &out[size_t(y) * w * 4];
             for (uint32_t x = 0; x + 1 < w + 1; x += 2) {
-                const uint8_t* p = src + y * d.pitch + x * 2;
-                int y0 = yuy2 ? p[0] : p[1], u = yuy2 ? p[1] : p[0], y1 = yuy2 ? p[2] : p[3], v = yuy2 ? p[3] : p[2];
+                const uint8_t* p = row + size_t(x) * 2;
+                uint32_t pair = 0;
+                std::memcpy(&pair, p, 4);
+                const int y0 = yuy2 ? p[0] : p[1];
+                const int u = yuy2 ? p[1] : p[0];
+                const int y1 = yuy2 ? p[2] : p[3];
+                const int v = yuy2 ? p[3] : p[2];
+                const int dd = u - 128;
+                const int e = v - 128;
+                // Guard against uninitialized/recycled memory before or between Bink frames:
+                // in BT.601 studio range, pure-black luma (Y <= 20) can never carry strong chroma
+                // (all-0x00 decodes green, all-0xFF / 0xFF000000 / 0x00FF00FF decode bright pink/purple).
+                const bool bad_fill = (pair == 0x00000000u || pair == 0xFFFFFFFFu ||
+                                       pair == 0xFF000000u || pair == 0x000000FFu ||
+                                       pair == 0xFF00FF00u || pair == 0x00FF00FFu ||
+                                       pair == 0xCDCDCDCDu || pair == 0xFEFEFEFEu);
+                const bool bad_black_chroma = (y0 <= 20 && y1 <= 20 && (std::abs(dd) > 36 || std::abs(e) > 36));
+                if (bad_fill || bad_black_chroma) {
+                    uint8_t* o = dst_row + size_t(x) * 4;
+                    o[0] = o[1] = o[2] = 0; o[3] = 255;
+                    if (x + 1 < w) { o[4] = o[5] = o[6] = 0; o[7] = 255; }
+                    continue;
+                }
+                const int r_off = 409 * e + 128;
+                const int g_off = -100 * dd - 208 * e + 128;
+                const int b_off = 516 * dd + 128;
                 for (int k = 0; k < 2 && x + uint32_t(k) < w; k++) {
-                    int c = (k ? y1 : y0) - 16, dd = u - 128, e = v - 128;  // BT.601 studio range
-                    uint8_t* o = &out[(y * w + x + uint32_t(k)) * 4];
-                    o[2] = Clamp255((298 * c + 409 * e + 128) >> 8);
-                    o[1] = Clamp255((298 * c - 100 * dd - 208 * e + 128) >> 8);
-                    o[0] = Clamp255((298 * c + 516 * dd + 128) >> 8);
-                    o[3] = 255;
+                    const int yv = k ? y1 : y0;
+                    uint8_t* o = dst_row + size_t(x + uint32_t(k)) * 4;
+                    if (yv <= 18 && (std::abs(dd) > 48 || std::abs(e) > 48)) {
+                        o[0] = o[1] = o[2] = 0;
+                        o[3] = 255;
+                    } else {
+                        const int c = 298 * (yv - 16);  // BT.601 studio range
+                        o[2] = Clamp255((c + r_off) >> 8);
+                        o[1] = Clamp255((c + g_off) >> 8);
+                        o[0] = Clamp255((c + b_off) >> 8);
+                        o[3] = 255;
+                    }
                 }
             }
+        }
         return;
     }
     if (d.linear) {

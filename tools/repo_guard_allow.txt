@@ -8,3 +8,6 @@ sdk/THIRD_PARTY.txt   # upstream licence texts; the toml++ licence names its aut
 # inside the emulated console, not a folder of anyone's machine.
 sdk/runtime/kernel/kernel.h :: D:\\{1,2}default\.xbe   # comment: an Xbox image path
 docs/history/traffic-bridge-log.md :: D:\\{1,2}flash   # an Xbox path of the game's asynchronous lookup
+
+# Original Midnight3Metal iOS app icon & README logo (not game material)
+ios-app/Assets.xcassets/AppIcon.appiconset/*.png   # original Midnight3Metal app icon & README logo

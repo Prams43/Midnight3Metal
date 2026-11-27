@@ -9,6 +9,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
+
 #include "gpu/render_profile.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
@@ -93,8 +97,12 @@ struct File : Object {
     FILE* fp = nullptr;
     const Disc::Entry* entry = nullptr;  // on the disc image instead of a host path
     bool dir = false;
+    bool read_only = false;
     bool written = false;
+    bool last_write = false;
     uint64_t pos = 0;
+    uint64_t fp_pos = ~0ull;
+    uint64_t cached_size = ~0ull;
     std::vector<fs::directory_entry> entries;
     std::vector<const Disc::Entry*> disc_entries;
     size_t next = 0;
@@ -111,6 +119,28 @@ struct File : Object {
         }
     }
 };
+
+void ConfigureReadStream(File& f) {
+    if (!f.fp || !f.read_only) return;
+    // Larger stdio buffer + kernel read-ahead eliminates song-switching and streaming I/O hitches on iOS APFS.
+    std::setvbuf(f.fp, nullptr, _IOFBF, 131072);
+#if defined(__APPLE__)
+    const int fd = fileno(f.fp);
+    if (fd >= 0) fcntl(fd, F_RDAHEAD, 1);
+#endif
+}
+
+bool RequestsWriteAccess(uint32_t access) {
+    // GENERIC_WRITE (0x40000000), GENERIC_ALL (0x10000000), MAXIMUM_ALLOWED (0x02000000),
+    // DELETE (0x00010000), FILE_WRITE_DATA (0x2), FILE_APPEND_DATA (0x4),
+    // FILE_WRITE_EA (0x10), FILE_WRITE_ATTRIBUTES (0x100)
+    return (access & 0x52010116u) != 0;
+}
+
+bool IsCdRomPath(const std::string& xbox_norm) {
+    std::string up = Upper(xbox_norm);
+    return up.rfind("D:", 0) == 0 || up.rfind("\\??\\D:", 0) == 0 || up.rfind(kCdRom, 0) == 0;
+}
 
 struct Link : Object {
     std::string target;
@@ -393,6 +423,8 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         IoStatus(iosb, kSuccess, info);
         return kSuccess;
     }
+    const std::string norm_xbox = Normalize(name);
+    const bool open_read_only = (disposition == 1) && (!RequestsWriteAccess(access) || IsCdRomPath(norm_xbox));
     const char* mode = nullptr;
     switch (disposition) {
         case 0:  // supersede
@@ -406,7 +438,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
                 IoStatus(iosb, kObjectNameNotFound, 5);
                 return kObjectNameNotFound;
             }
-            mode = "r+b";
+            mode = open_read_only ? "rb" : "r+b";
             break;
         case 2:  // create
             if (exists) {
@@ -436,8 +468,12 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         IoStatus(iosb, kObjectPathNotFound, 0);
         return kObjectPathNotFound;
     }
+    bool actual_ro = open_read_only;
     FILE* fp = std::fopen(host.c_str(), mode);
-    if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
+    if (!fp && std::string(mode) == "r+b") {
+        fp = std::fopen(host.c_str(), "rb");  // read only media
+        actual_ro = true;
+    }
     if (!fp) {
         LOGW("NtCreateFile: cannot open %s", host.c_str());
         IoStatus(iosb, kAccessDenied, 0);
@@ -446,8 +482,11 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     if (info == 2) InvalidateDirCache(host);
     auto f = std::make_shared<File>();
     f->host = host;
-    f->xbox = Normalize(name);
+    f->xbox = norm_xbox;
     f->fp = fp;
+    f->read_only = actual_ro;
+    f->fp_pos = 0;
+    ConfigureReadStream(*f);
     f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
@@ -457,7 +496,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
 
 KERNEL_EXPORT(202, NtOpenFile, 6) {
     // same as create with FILE_OPEN
-    uint32_t handle_out = a[0], attrs = a[2], iosb = a[3], options = a[5];
+    uint32_t handle_out = a[0], access = a[1], attrs = a[2], iosb = a[3], options = a[5];
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
     Target t = Resolve(name, root);
@@ -474,9 +513,20 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     f->xbox = Normalize(name);
     f->dir = fs::is_directory(host, ec);
     if (!f->dir) {
-        f->fp = std::fopen(host.c_str(), "r+b");
-        if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
+        const bool want_ro = !RequestsWriteAccess(access) || IsCdRomPath(f->xbox);
+        if (want_ro) {
+            f->fp = std::fopen(host.c_str(), "rb");
+            f->read_only = true;
+        } else {
+            f->fp = std::fopen(host.c_str(), "r+b");
+            if (!f->fp) {
+                f->fp = std::fopen(host.c_str(), "rb");
+                f->read_only = true;
+            }
+        }
         if (!f->fp) return kAccessDenied;
+        f->fp_pos = 0;
+        ConfigureReadStream(*f);
     }
     (void)options;
     W32(handle_out, NewHandle(f));
@@ -561,7 +611,14 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     ResetEvent(*f);
     std::lock_guard<std::mutex> lock(f->io);
     uint64_t pos = Offset(*f, off);
-    if (f->fp) Seek(f->fp, pos);
+    if (f->fp) {
+        // Avoid redundant fseeko on sequential reads: BSD/Darwin stdio discards the
+        // read buffer on seek/direction changes, causing multi-millisecond stalls on audio streams.
+        if (pos != f->fp_pos || write != f->last_write) {
+            Seek(f->fp, pos);
+            f->fp_pos = pos;
+        }
+    }
     uint32_t n = 0;
     while (n < len) {
         uint32_t at = pages ? R32(pages + n / 0x1000 * 8) + n % 0x1000 : buf + n;
@@ -573,7 +630,14 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
-    if (write && n) f->written = true;
+    if (f->fp) {
+        f->fp_pos = pos + n;
+        f->last_write = write;
+    }
+    if (write && n) {
+        f->written = true;
+        f->cached_size = ~0ull;
+    }
     if (!write && !pages && n) ReplaceMotionBlurTune(*f, pos, buf, n);
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
@@ -591,10 +655,17 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
     auto f = FileFromHandle(h);
     if (!f) return kInvalidHandle;
     std::error_code ec;
-    uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : fs::file_size(f->host, ec);
-    if (f->fp && f->written) {
-        std::fflush(f->fp);
+    uint64_t size = 0;
+    if (f->dir) {
+        size = 0;
+    } else if (f->entry) {
+        size = f->entry->size;
+    } else if (f->read_only && f->cached_size != ~0ull) {
+        size = f->cached_size;
+    } else {
+        if (f->fp && f->written) std::fflush(f->fp);
         size = fs::file_size(f->host, ec);
+        if (f->read_only && !ec) f->cached_size = size;
     }
     std::memset(HostPtr(out), 0, len);
     switch (cls) {
