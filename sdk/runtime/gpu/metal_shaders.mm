@@ -1,6 +1,7 @@
 #include "gpu/metal_shaders.h"
 #include <regex>
 #include <string>
+#include <utility>
 
 namespace gpu {
 
@@ -18,25 +19,46 @@ void ReplaceAll(std::string& s, const std::string& from, const std::string& to) 
 // Replace `=` scalar zero initialization on vector types, e.g. `float4 r1 = 0;` -> `float4 r1 = float4(0.0f);`
 // Also handles comma-separated declarations like `float3 la = 0, ld = 0, ls = 0;`
 std::string FixVectorZeroInit(std::string s) {
-    // Handle `float4 x = 0;` and `float4 a = ..., b = 0;`
-    s = std::regex_replace(s, std::regex(R"(\b(float[234])\s+([A-Za-z_]\w*)\s*=\s*0\s*;)"), "$1 $2 = $1(0.0f);");
-    s = std::regex_replace(s, std::regex(R"(\bfloat3\s+la\s*=\s*0,\s*ld\s*=\s*0,\s*ls\s*=\s*0;)"),
-                           "float3 la = float3(0.0f), ld = float3(0.0f), ls = float3(0.0f);");
-    s = std::regex_replace(s, std::regex(R"(\bfloat4\s+cur\s*=\s*v0,\s*tmp\s*=\s*0;)"),
-                           "float4 cur = v0, tmp = float4(0.0f);");
-    s = std::regex_replace(s, std::regex(R"(\bfloat4\s+r0\s*=\s*([^;]+),\s*r1\s*=\s*0;)"),
-                           "float4 r0 = $1, r1 = float4(0.0f);");
+    static const std::regex re_vec_zero(R"(\b(float[234])\s+([A-Za-z_]\w*)\s*=\s*0\s*;)");
+    static const std::regex re_la_ld_ls(R"(\bfloat3\s+la\s*=\s*0,\s*ld\s*=\s*0,\s*ls\s*=\s*0;)");
+    static const std::regex re_cur_tmp(R"(\bfloat4\s+cur\s*=\s*v0,\s*tmp\s*=\s*0;)");
+    static const std::regex re_r0_r1(R"(\bfloat4\s+r0\s*=\s*([^;]+),\s*r1\s*=\s*0;)");
+    s = std::regex_replace(s, re_vec_zero, "$1 $2 = $1(0.0f);");
+    s = std::regex_replace(s, re_la_ld_ls, "float3 la = float3(0.0f), ld = float3(0.0f), ls = float3(0.0f);");
+    s = std::regex_replace(s, re_cur_tmp, "float4 cur = v0, tmp = float4(0.0f);");
+    s = std::regex_replace(s, re_r0_r1, "float4 r0 = $1, r1 = float4(0.0f);");
     return s;
 }
 
 std::string CommonHlslToMslFixes(std::string s) {
+    // Precompiled static regexes (constructing 35+ std::regex per shader caused 100-230ms hitches on iOS).
+    static const std::regex re_cb_vc(R"(cbuffer\s+VC\s*:\s*register\(b0\)\s*\{[^}]*\}\s*;)");
+    static const std::regex re_cb_dc(R"(cbuffer\s+DC\s*:\s*register\(b1\)\s*\{[^}]*\}\s*;)");
+    static const std::regex re_tex_decl(R"(Texture(?:2D<float>|2D|3D|Cube)\s+tex\d+\s*:\s*register\(t\d+\)\s*;\s*)");
+    static const std::regex re_smp_decl(R"(Sampler(?:ComparisonState|State)\s+smp\d+\s*:\s*register\(s\d+\)\s*;\s*)");
+    static const std::regex re_float_cast(R"(\(float([234]?)\)\s*\()");
+    static const std::regex re_magclamp_xxxx(R"(magclamp\(1\.0 / v\)\.xxxx)");
+    static const std::regex re_rcp_xxxx(R"(\(1\.0 / v\)\.xxxx)");
+    static const std::regex re_rsq_xxxx(R"(\(rsqrt\(abs\(v\)\)\)\.xxxx)");
+    static const std::regex re_inf_xxxx(R"(\(INFINITY\)\.xxxx)");
+    static const std::regex re_dot_xxxx(R"(dot\(([^;{}]+?)\)\.xxxx)");
+    static const std::regex re_cmp_xxxx(R"(t\.SampleCmpLevelZero\(([^;{}]+?)\)\.xxxx)");
+    static const std::regex re_max_zero(R"(\bmax\(([^;{}]+?),\s*0(?:\.0)?\))");
+    static const std::regex re_sample_cmp(R"((\b(?:tex\d+|t))\.(?:SampleCmpLevelZero)\(([^)]+)\))");
+    static const std::regex re_sample_lvl(R"((\b(?:tex\d+|t))\.SampleLevel\(([^,]+),\s*([^,]+),\s*([^)]+)\))");
+    static const std::regex re_sample(R"((\b(?:tex\d+|t))\.Sample\()");
+    static const std::regex re_tex3_load(R"(tex3\.Load\(int3\(([^,]+),\s*0\)\))");
+    static const std::regex re_mul(R"(\bmul\s*\()");
+    static const std::regex re_vout_sem(R"(\s*:\s*(?:COLOR|TEXCOORD)\d+\s*;)");
+    static const std::regex re_attr_sem(R"(:\s*ATTR(\d+)\s*;)");
+
     // Strip cbuffer VC and DC declarations (we emit clean MSL structs at the top)
-    s = std::regex_replace(s, std::regex(R"(cbuffer\s+VC\s*:\s*register\(b0\)\s*\{[^}]*\}\s*;)"), "");
-    s = std::regex_replace(s, std::regex(R"(cbuffer\s+DC\s*:\s*register\(b1\)\s*\{[^}]*\}\s*;)"), "");
+    s = std::regex_replace(s, re_cb_vc, "");
+    s = std::regex_replace(s, re_cb_dc, "");
 
     // Strip Texture/Sampler global declarations (moved to fs_main parameters)
-    s = std::regex_replace(s, std::regex(R"(Texture(?:2D<float>|2D|3D|Cube)\s+tex\d+\s*:\s*register\(t\d+\)\s*;\s*)"), "");
-    s = std::regex_replace(s, std::regex(R"(Sampler(?:ComparisonState|State)\s+smp\d+\s*:\s*register\(s\d+\)\s*;\s*)"), "");
+    s = std::regex_replace(s, re_tex_decl, "");
+    s = std::regex_replace(s, re_smp_decl, "");
 
     // Basic keyword & intrinsic translations
     ReplaceAll(s, "precise ", "");
@@ -51,7 +73,7 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "ddy(", "dfdy(");
 
     // `(float4)(a < b)` -> `float4(a < b)` and `(float)(...)` -> `float(...)`
-    s = std::regex_replace(s, std::regex(R"(\(float([234]?)\)\s*\()"), "float$1(");
+    s = std::regex_replace(s, re_float_cast, "float$1(");
 
     // Fix `mac_mul`: in MSL `(a == 0 || b == 0)` on float4 is invalid; use select
     ReplaceAll(s,
@@ -63,12 +85,12 @@ std::string CommonHlslToMslFixes(std::string s) {
                "float4 mac_mul(float4 a, float4 b) { return select(a * b, float4(0.0f), (a == 0.0f) | (b == 0.0f)); }");
 
     // Scalar `.xxxx` swizzles (invalid on float in MSL)
-    s = std::regex_replace(s, std::regex(R"(magclamp\(1\.0 / v\)\.xxxx)"), "float4(magclamp(1.0f / v))");
-    s = std::regex_replace(s, std::regex(R"(\(1\.0 / v\)\.xxxx)"), "float4(1.0f / v)");
-    s = std::regex_replace(s, std::regex(R"(\(rsqrt\(abs\(v\)\)\)\.xxxx)"), "float4(rsqrt(abs(v)))");
-    s = std::regex_replace(s, std::regex(R"(\(INFINITY\)\.xxxx)"), "float4(INFINITY)");
-    s = std::regex_replace(s, std::regex(R"(dot\(([^;{}]+?)\)\.xxxx)"), "float4(dot($1))");
-    s = std::regex_replace(s, std::regex(R"(t\.SampleCmpLevelZero\(([^;{}]+?)\)\.xxxx)"), "float4(t.sample_compare($1))");
+    s = std::regex_replace(s, re_magclamp_xxxx, "float4(magclamp(1.0f / v))");
+    s = std::regex_replace(s, re_rcp_xxxx, "float4(1.0f / v)");
+    s = std::regex_replace(s, re_rsq_xxxx, "float4(rsqrt(abs(v)))");
+    s = std::regex_replace(s, re_inf_xxxx, "float4(INFINITY)");
+    s = std::regex_replace(s, re_dot_xxxx, "float4(dot($1))");
+    s = std::regex_replace(s, re_cmp_xxxx, "float4(t.sample_compare($1))");
 
     // Fix MSL type/overload ambiguities in VS/PS helpers
     ReplaceAll(s, "max(s.x, 0)", "max(s.x, 0.0f)");
@@ -76,30 +98,30 @@ std::string CommonHlslToMslFixes(std::string s) {
     ReplaceAll(s, "clamp(z, 0, mx)", "clamp(z, 0.0f, mx)");
     ReplaceAll(s, ", -1, 1)", ", -1.0f, 1.0f)");
     ReplaceAll(s, ", -1.0, 1.0)", ", -1.0f, 1.0f)");
-    s = std::regex_replace(s, std::regex(R"(\bmax\(([^;{}]+?),\s*0(?:\.0)?\))"), "max($1, 0.0f)");
+    s = std::regex_replace(s, re_max_zero, "max($1, 0.0f)");
     ReplaceAll(s, "return (b - (b >= 128 ? hi : lo)) / d;", "return (b - select(float3(lo), float3(hi), b >= 128.0f)) / d;");
 
     // Texture sampling methods
     ReplaceAll(s,
                "t.SampleLevel(s, uv + w.xy * (float2(x, y) - (n - 1) * 0.5), 0)",
                "t.sample(s, uv + w.xy * (float2(x, y) - (n - 1) * 0.5f), level(0.0f))");
-    s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.(?:SampleCmpLevelZero)\(([^)]+)\))"), "$1.sample_compare($2)");
-    s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.SampleLevel\(([^,]+),\s*([^,]+),\s*([^)]+)\))"), "$1.sample($2, $3, level($4))");
-    s = std::regex_replace(s, std::regex(R"((\b(?:tex\d+|t))\.Sample\()"), "$1.sample(");
-    s = std::regex_replace(s, std::regex(R"(tex3\.Load\(int3\(([^,]+),\s*0\)\))"), "tex3.read(uint2($1), 0)");
+    s = std::regex_replace(s, re_sample_cmp, "$1.sample_compare($2)");
+    s = std::regex_replace(s, re_sample_lvl, "$1.sample($2, $3, level($4))");
+    s = std::regex_replace(s, re_sample, "$1.sample(");
+    s = std::regex_replace(s, re_tex3_load, "tex3.read(uint2($1), 0)");
 
     // `mul(v, m)` -> `(v * m)`
-    s = std::regex_replace(s, std::regex(R"(\bmul\s*\()"), "hlsl_mul(");
+    s = std::regex_replace(s, re_mul, "hlsl_mul(");
 
     // Fix vector zero initializations
     s = FixVectorZeroInit(std::move(s));
 
     // Fix VOut semantics
     ReplaceAll(s, "float4 pos : SV_Position;", "float4 pos [[position]];");
-    s = std::regex_replace(s, std::regex(R"(\s*:\s*(?:COLOR|TEXCOORD)\d+\s*;)"), ";");
+    s = std::regex_replace(s, re_vout_sem, ";");
 
     // Fix VIn / VRaw input attributes
-    s = std::regex_replace(s, std::regex(R"(:\s*ATTR(\d+)\s*;)"), "[[attribute($1)]];");
+    s = std::regex_replace(s, re_attr_sem, "[[attribute($1)]];");
     ReplaceAll(s, "uint id : SV_VertexID;", "");
 
     return s;
@@ -137,16 +159,32 @@ inline float4 hlsl_mul(float4 v, float4x4 m) { return v * m; }
 )";
 
 std::string InjectConstantBufferAccess(std::string s) {
-    // Prefix DC fields with `dc.` and VC array `c[` with `vc.c[`
-    static const char* kDcFields[] = {
-        "surf", "fogp", "fogcolor", "misc", "pc", "tfactor", "texsize",
-        "bumpmat", "bumplum", "wvp", "ext", "spread", "wv", "wvn", "tm",
-        "mat", "amb", "lt"
+    // Prefix DC fields with `dc.` and VC array `c[` with `vc.c[` using precompiled static regexes.
+    static const std::pair<std::regex, std::string> kDcRules[] = {
+        {std::regex(R"(\bsurf\b)"), "dc.surf"},
+        {std::regex(R"(\bfogp\b)"), "dc.fogp"},
+        {std::regex(R"(\bfogcolor\b)"), "dc.fogcolor"},
+        {std::regex(R"(\bmisc\b)"), "dc.misc"},
+        {std::regex(R"(\bpc\b)"), "dc.pc"},
+        {std::regex(R"(\btfactor\b)"), "dc.tfactor"},
+        {std::regex(R"(\btexsize\b)"), "dc.texsize"},
+        {std::regex(R"(\bbumpmat\b)"), "dc.bumpmat"},
+        {std::regex(R"(\bbumplum\b)"), "dc.bumplum"},
+        {std::regex(R"(\bwvp\b)"), "dc.wvp"},
+        {std::regex(R"(\bext\b)"), "dc.ext"},
+        {std::regex(R"(\bspread\b)"), "dc.spread"},
+        {std::regex(R"(\bwv\b)"), "dc.wv"},
+        {std::regex(R"(\bwvn\b)"), "dc.wvn"},
+        {std::regex(R"(\btm\b)"), "dc.tm"},
+        {std::regex(R"(\bmat\b)"), "dc.mat"},
+        {std::regex(R"(\bamb\b)"), "dc.amb"},
+        {std::regex(R"(\blt\b)"), "dc.lt"},
     };
-    for (const char* f : kDcFields) {
-        s = std::regex_replace(s, std::regex(std::string(R"(\b)") + f + R"(\b)"), std::string("dc.") + f);
+    static const std::regex re_vc(R"(\bc\s*\[)");
+    for (const auto& [re, repl] : kDcRules) {
+        s = std::regex_replace(s, re, repl);
     }
-    s = std::regex_replace(s, std::regex(R"(\bc\s*\[)"), "vc.c[");
+    s = std::regex_replace(s, re_vc, "vc.c[");
     return s;
 }
 

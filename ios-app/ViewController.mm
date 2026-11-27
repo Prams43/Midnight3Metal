@@ -10,6 +10,7 @@
 #include "kernel/kernel.h"
 #include "kernel/memory.h"
 #import <CommonCrypto/CommonDigest.h>
+#import <QuartzCore/QuartzCore.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <algorithm>
 #include <atomic>
@@ -132,6 +133,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
     // Pre-launch setup & settings UI
     UIView* _launcherView;
+    CAGradientLayer* _launcherBgGrad;
     UIView* _leftCard;
     UIView* _rightCard;
     UIScrollView* _settingsScroll;
@@ -237,7 +239,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
 - (UILabel*)makeSectionTitle:(NSString*)text {
     UILabel* lbl = [[UILabel alloc] initWithFrame:CGRectZero];
     lbl.text = text;
-    lbl.textColor = [UIColor colorWithRed:0.42 green:0.84 blue:1.0 alpha:1.0];
+    lbl.textColor = [UIColor colorWithRed:0.60 green:0.76 blue:0.90 alpha:1.0];
     lbl.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightHeavy];
     return lbl;
 }
@@ -245,16 +247,16 @@ static BOOL HasValidXbeHeader(NSString* path) {
 - (UISegmentedControl*)makeSegmentedControl:(NSArray<NSString*>*)items {
     UISegmentedControl* seg = [[UISegmentedControl alloc] initWithItems:items];
     seg.selectedSegmentIndex = 0;
-    seg.backgroundColor = [UIColor colorWithRed:0.10 green:0.13 blue:0.18 alpha:1.0];
+    seg.backgroundColor = [UIColor colorWithRed:0.145 green:0.165 blue:0.208 alpha:1.0];
     if (@available(iOS 13.0, *)) {
-        seg.selectedSegmentTintColor = [UIColor colorWithRed:0.16 green:0.52 blue:0.86 alpha:1.0];
+        seg.selectedSegmentTintColor = [UIColor colorWithRed:0.26 green:0.46 blue:0.68 alpha:1.0];
     }
     [seg setTitleTextAttributes:@{
-        NSForegroundColorAttributeName: [UIColor colorWithWhite:0.78 alpha:1.0],
+        NSForegroundColorAttributeName: [UIColor colorWithRed:0.72 green:0.76 blue:0.82 alpha:1.0],
         NSFontAttributeName: [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold],
     } forState:UIControlStateNormal];
     [seg setTitleTextAttributes:@{
-        NSForegroundColorAttributeName: UIColor.whiteColor,
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:0.98 alpha:1.0],
         NSFontAttributeName: [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold],
     } forState:UIControlStateSelected];
     [seg addTarget:self action:@selector(launcherSettingChanged:) forControlEvents:UIControlEventValueChanged];
@@ -263,14 +265,23 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
 - (void)buildLauncherUi {
     _launcherView = [[UIView alloc] initWithFrame:self.view.bounds];
-    _launcherView.backgroundColor = [UIColor colorWithRed:0.04 green:0.05 blue:0.08 alpha:1.0];
+    _launcherView.backgroundColor = [UIColor colorWithRed:0.055 green:0.064 blue:0.086 alpha:1.0];
     _launcherView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _launcherBgGrad = [CAGradientLayer layer];
+    _launcherBgGrad.colors = @[
+        (id)[UIColor colorWithRed:0.082 green:0.096 blue:0.128 alpha:1.0].CGColor,
+        (id)[UIColor colorWithRed:0.048 green:0.056 blue:0.076 alpha:1.0].CGColor,
+    ];
+    _launcherBgGrad.startPoint = CGPointMake(0.2, 0.0);
+    _launcherBgGrad.endPoint = CGPointMake(0.8, 1.0);
+    _launcherBgGrad.frame = _launcherView.bounds;
+    [_launcherView.layer insertSublayer:_launcherBgGrad atIndex:0];
     [self.view addSubview:_launcherView];
 
     // Left column: Branding + File Integrity Status + Play button
     _leftCard = [[UIView alloc] initWithFrame:CGRectZero];
-    _leftCard.backgroundColor = [UIColor colorWithRed:0.07 green:0.09 blue:0.13 alpha:1.0];
-    _leftCard.layer.cornerRadius = 16.0;
+    _leftCard.backgroundColor = [UIColor colorWithRed:0.105 green:0.120 blue:0.154 alpha:0.94];
+    _leftCard.layer.cornerRadius = 18.0;
     _leftCard.layer.borderWidth = 1.0;
     _leftCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
     [_launcherView addSubview:_leftCard];
@@ -281,7 +292,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
     logoView.layer.cornerRadius = 14.0;
     logoView.layer.masksToBounds = YES;
     logoView.layer.borderWidth = 1.0;
-    logoView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.20].CGColor;
+    logoView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
     NSString* logoPath = [[NSBundle mainBundle] pathForResource:@"AppIcon-180" ofType:@"png"];
     if (logoPath) {
         logoView.image = [UIImage imageWithContentsOfFile:logoPath];
@@ -291,7 +302,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
     UILabel* titleLbl = [[UILabel alloc] initWithFrame:CGRectZero];
     titleLbl.tag = 102;
     titleLbl.text = @"MIDNIGHT 3 METAL";
-    titleLbl.textColor = UIColor.whiteColor;
+    titleLbl.textColor = [UIColor colorWithRed:0.95 green:0.96 blue:0.98 alpha:1.0];
     titleLbl.font = [UIFont systemFontOfSize:17.5 weight:UIFontWeightBlack];
     titleLbl.adjustsFontSizeToFitWidth = YES;
     titleLbl.minimumScaleFactor = 0.75;
@@ -300,57 +311,57 @@ static BOOL HasValidXbeHeader(NSString* path) {
     UILabel* subLbl = [[UILabel alloc] initWithFrame:CGRectZero];
     subLbl.tag = 103;
     subLbl.text = @"iOS Native Metal Port • Xbox XDK 5849";
-    subLbl.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
+    subLbl.textColor = [UIColor colorWithRed:0.62 green:0.66 blue:0.74 alpha:1.0];
     subLbl.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightMedium];
     subLbl.adjustsFontSizeToFitWidth = YES;
     subLbl.minimumScaleFactor = 0.75;
     [_leftCard addSubview:subLbl];
 
     _statusBadge = [[UIView alloc] initWithFrame:CGRectZero];
-    _statusBadge.backgroundColor = [UIColor colorWithRed:0.10 green:0.12 blue:0.17 alpha:1.0];
-    _statusBadge.layer.cornerRadius = 12.0;
-    _statusBadge.layer.borderWidth = 1.2;
-    _statusBadge.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+    _statusBadge.backgroundColor = [UIColor colorWithRed:0.12 green:0.14 blue:0.18 alpha:1.0];
+    _statusBadge.layer.cornerRadius = 13.0;
+    _statusBadge.layer.borderWidth = 1.0;
+    _statusBadge.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.14].CGColor;
     [_leftCard addSubview:_statusBadge];
 
     _statusTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _statusTitleLabel.text = @"SCANNING GAME FILES...";
-    _statusTitleLabel.textColor = UIColor.whiteColor;
+    _statusTitleLabel.textColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     _statusTitleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightHeavy];
     [_statusBadge addSubview:_statusTitleLabel];
 
     _statusDetailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _statusDetailLabel.text = @"Checking Documents folder...";
-    _statusDetailLabel.textColor = [UIColor colorWithWhite:0.78 alpha:1.0];
+    _statusDetailLabel.textColor = [UIColor colorWithRed:0.78 green:0.82 blue:0.86 alpha:1.0];
     _statusDetailLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightRegular];
     _statusDetailLabel.numberOfLines = 0;
     [_statusBadge addSubview:_statusDetailLabel];
 
     _rescanButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [_rescanButton setTitle:@"RE-SCAN FILES" forState:UIControlStateNormal];
-    [_rescanButton setTitleColor:[UIColor colorWithRed:0.62 green:0.88 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
+    [_rescanButton setTitleColor:[UIColor colorWithRed:0.82 green:0.89 blue:0.96 alpha:1.0] forState:UIControlStateNormal];
     _rescanButton.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightBold];
-    _rescanButton.backgroundColor = [UIColor colorWithRed:0.10 green:0.15 blue:0.22 alpha:1.0];
-    _rescanButton.layer.cornerRadius = 10.0;
+    _rescanButton.backgroundColor = [UIColor colorWithRed:0.155 green:0.185 blue:0.235 alpha:0.95];
+    _rescanButton.layer.cornerRadius = 11.0;
     _rescanButton.layer.borderWidth = 1.0;
-    _rescanButton.layer.borderColor = [UIColor colorWithRed:0.30 green:0.72 blue:1.0 alpha:0.45].CGColor;
+    _rescanButton.layer.borderColor = [UIColor colorWithRed:0.55 green:0.70 blue:0.85 alpha:0.32].CGColor;
     [_rescanButton addTarget:self action:@selector(rescanPressed:) forControlEvents:UIControlEventTouchUpInside];
     [_leftCard addSubview:_rescanButton];
 
     _playButton = [UIButton buttonWithType:UIButtonTypeCustom];
     [_playButton setTitle:@"PLAY GAME" forState:UIControlStateNormal];
-    [_playButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    [_playButton setTitleColor:[UIColor colorWithWhite:0.55 alpha:1.0] forState:UIControlStateDisabled];
+    [_playButton setTitleColor:[UIColor colorWithWhite:0.98 alpha:1.0] forState:UIControlStateNormal];
+    [_playButton setTitleColor:[UIColor colorWithWhite:0.56 alpha:1.0] forState:UIControlStateDisabled];
     _playButton.titleLabel.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightBlack];
     _playButton.layer.cornerRadius = 12.0;
-    _playButton.layer.borderWidth = 1.2;
+    _playButton.layer.borderWidth = 1.0;
     [_playButton addTarget:self action:@selector(playPressed:) forControlEvents:UIControlEventTouchUpInside];
     [_leftCard addSubview:_playButton];
 
     // Right column: Scrollable Graphics, Audio & HUD Settings
     _rightCard = [[UIView alloc] initWithFrame:CGRectZero];
-    _rightCard.backgroundColor = [UIColor colorWithRed:0.07 green:0.09 blue:0.13 alpha:1.0];
-    _rightCard.layer.cornerRadius = 16.0;
+    _rightCard.backgroundColor = [UIColor colorWithRed:0.105 green:0.120 blue:0.154 alpha:0.94];
+    _rightCard.layer.cornerRadius = 18.0;
     _rightCard.layer.borderWidth = 1.0;
     _rightCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
     [_launcherView addSubview:_rightCard];
@@ -368,7 +379,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
         UILabel* l = [[UILabel alloc] initWithFrame:CGRectZero];
         l.tag = tag;
         l.text = title;
-        l.textColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+        l.textColor = [UIColor colorWithRed:0.86 green:0.89 blue:0.94 alpha:1.0];
         l.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
         [_settingsScroll addSubview:l];
     };
@@ -386,7 +397,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
     [_settingsScroll addSubview:_fpsSeg];
 
     addRowLabel(213, @"Speed Motion Blur");
-    _blurSeg = [self makeSegmentedControl:@[@"Off (Crisp)", @"Original"]];
+    _blurSeg = [self makeSegmentedControl:@[@"Off (Crisp)", @"Balanced"]];
     [_settingsScroll addSubview:_blurSeg];
 
     addRowLabel(214, @"In-Game Minimap Position");
@@ -399,24 +410,24 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
     addRowLabel(216, @"Show FPS Counter");
     _fpsCounterSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-    _fpsCounterSwitch.onTintColor = [UIColor colorWithRed:0.15 green:0.78 blue:0.48 alpha:1.0];
+    _fpsCounterSwitch.onTintColor = [UIColor colorWithRed:0.26 green:0.52 blue:0.68 alpha:1.0];
     [_fpsCounterSwitch addTarget:self action:@selector(launcherSettingChanged:) forControlEvents:UIControlEventValueChanged];
     [_settingsScroll addSubview:_fpsCounterSwitch];
 
     addRowLabel(217, @"Game Audio");
     _audioSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-    _audioSwitch.onTintColor = [UIColor colorWithRed:0.15 green:0.78 blue:0.48 alpha:1.0];
+    _audioSwitch.onTintColor = [UIColor colorWithRed:0.26 green:0.52 blue:0.68 alpha:1.0];
     [_audioSwitch addTarget:self action:@selector(launcherSettingChanged:) forControlEvents:UIControlEventValueChanged];
     [_settingsScroll addSubview:_audioSwitch];
 
     _resetSettingsButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [_resetSettingsButton setTitle:@"RESET DEFAULT SETTINGS" forState:UIControlStateNormal];
-    [_resetSettingsButton setTitleColor:[UIColor colorWithRed:1.0 green:0.55 blue:0.55 alpha:1.0] forState:UIControlStateNormal];
+    [_resetSettingsButton setTitleColor:[UIColor colorWithRed:0.88 green:0.60 blue:0.62 alpha:1.0] forState:UIControlStateNormal];
     _resetSettingsButton.titleLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightBold];
-    _resetSettingsButton.backgroundColor = [UIColor colorWithRed:0.24 green:0.09 blue:0.11 alpha:0.85];
-    _resetSettingsButton.layer.cornerRadius = 10.0;
+    _resetSettingsButton.backgroundColor = [UIColor colorWithRed:0.20 green:0.13 blue:0.15 alpha:0.90];
+    _resetSettingsButton.layer.cornerRadius = 11.0;
     _resetSettingsButton.layer.borderWidth = 1.0;
-    _resetSettingsButton.layer.borderColor = [UIColor colorWithRed:1.0 green:0.38 blue:0.42 alpha:0.45].CGColor;
+    _resetSettingsButton.layer.borderColor = [UIColor colorWithRed:0.74 green:0.42 blue:0.45 alpha:0.38].CGColor;
     [_resetSettingsButton addTarget:self action:@selector(resetLauncherSettings:) forControlEvents:UIControlEventTouchUpInside];
     [_settingsScroll addSubview:_resetSettingsButton];
 
@@ -427,6 +438,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
     if (!_launcherView || _launcherView.hidden) return;
     const CGRect b = self.view.bounds;
     _launcherView.frame = b;
+    _launcherBgGrad.frame = b;
 
     UIEdgeInsets safe = UIEdgeInsetsZero;
     if (@available(iOS 11.0, *)) {
@@ -563,9 +575,9 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
     gpu::MinimapConfig mm{};
     switch (_minimapSeg.selectedSegmentIndex) {
-    case 1: mm = {true, true, 0.14f, 0.24f}; break;   // Top-Left
-    case 2: mm = {true, true, 0.86f, 0.24f}; break;   // Top-Right
-    case 3: mm = {true, true, 0.86f, 0.78f}; break;   // Bottom-Right
+    case 1: mm = {true, true, 0.16f, 0.29f}; break;   // Top-Left (below top bar, inset from left)
+    case 2: mm = {true, true, 0.85f, 0.29f}; break;   // Top-Right
+    case 3: mm = {true, true, 0.85f, 0.78f}; break;   // Bottom-Right
     case 4: mm = {false, false, 0.14f, 0.78f}; break; // Hidden
     case 0:
     default: mm = {true, false, 0.14f, 0.78f}; break; // Default bottom-left
@@ -670,10 +682,10 @@ static BOOL HasValidXbeHeader(NSString* path) {
     _filesReady = (xbeHeaderOk && assetsFound);
 
     if (_filesReady) {
-        _statusBadge.backgroundColor = [UIColor colorWithRed:0.05 green:0.24 blue:0.14 alpha:0.90];
-        _statusBadge.layer.borderColor = [UIColor colorWithRed:0.25 green:0.92 blue:0.55 alpha:0.80].CGColor;
+        _statusBadge.backgroundColor = [UIColor colorWithRed:0.105 green:0.185 blue:0.168 alpha:0.92];
+        _statusBadge.layer.borderColor = [UIColor colorWithRed:0.36 green:0.66 blue:0.55 alpha:0.52].CGColor;
         _statusTitleLabel.text = @"● GAME FILES DETECTED";
-        _statusTitleLabel.textColor = [UIColor colorWithRed:0.42 green:1.0 blue:0.68 alpha:1.0];
+        _statusTitleLabel.textColor = [UIColor colorWithRed:0.56 green:0.85 blue:0.72 alpha:1.0];
         _statusDetailLabel.text = [NSString stringWithFormat:
             @"Executable: default.xbe (%@)\nGame Assets: Detected (%.2f GB)\nStatus: Ready to launch.",
             xbeVerified ? @"Verified Retail" : @"Valid XBE",
@@ -681,13 +693,13 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
         _playButton.enabled = YES;
         [_playButton setTitle:@"PLAY GAME" forState:UIControlStateNormal];
-        _playButton.backgroundColor = [UIColor colorWithRed:0.08 green:0.56 blue:0.32 alpha:1.0];
-        _playButton.layer.borderColor = [UIColor colorWithRed:0.35 green:1.0 blue:0.65 alpha:0.90].CGColor;
+        _playButton.backgroundColor = [UIColor colorWithRed:0.20 green:0.50 blue:0.42 alpha:1.0];
+        _playButton.layer.borderColor = [UIColor colorWithRed:0.48 green:0.80 blue:0.70 alpha:0.52].CGColor;
     } else if (xbeHeaderOk && !assetsFound) {
-        _statusBadge.backgroundColor = [UIColor colorWithRed:0.28 green:0.18 blue:0.04 alpha:0.90];
-        _statusBadge.layer.borderColor = [UIColor colorWithRed:1.0 green:0.74 blue:0.22 alpha:0.80].CGColor;
+        _statusBadge.backgroundColor = [UIColor colorWithRed:0.21 green:0.17 blue:0.11 alpha:0.92];
+        _statusBadge.layer.borderColor = [UIColor colorWithRed:0.76 green:0.58 blue:0.30 alpha:0.52].CGColor;
         _statusTitleLabel.text = @"▲ GAME ASSETS NOT DETECTED";
-        _statusTitleLabel.textColor = [UIColor colorWithRed:1.0 green:0.84 blue:0.40 alpha:1.0];
+        _statusTitleLabel.textColor = [UIColor colorWithRed:0.90 green:0.77 blue:0.48 alpha:1.0];
         _statusDetailLabel.text =
             @"default.xbe was found, but game asset files (assets_x.dat / folders) are missing.\n"
             @"Copy all extracted Xbox game files into:\nFiles → On My iPhone → MC3 Remix";
@@ -695,12 +707,12 @@ static BOOL HasValidXbeHeader(NSString* path) {
         _playButton.enabled = NO;
         [_playButton setTitle:@"GAME FILES REQUIRED" forState:UIControlStateDisabled];
         _playButton.backgroundColor = [UIColor colorWithRed:0.15 green:0.17 blue:0.21 alpha:1.0];
-        _playButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.14].CGColor;
+        _playButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
     } else {
-        _statusBadge.backgroundColor = [UIColor colorWithRed:0.28 green:0.07 blue:0.09 alpha:0.90];
-        _statusBadge.layer.borderColor = [UIColor colorWithRed:1.0 green:0.36 blue:0.40 alpha:0.80].CGColor;
+        _statusBadge.backgroundColor = [UIColor colorWithRed:0.21 green:0.12 blue:0.13 alpha:0.92];
+        _statusBadge.layer.borderColor = [UIColor colorWithRed:0.76 green:0.39 blue:0.42 alpha:0.52].CGColor;
         _statusTitleLabel.text = @"✕ GAME FILES NOT DETECTED";
-        _statusTitleLabel.textColor = [UIColor colorWithRed:1.0 green:0.52 blue:0.55 alpha:1.0];
+        _statusTitleLabel.textColor = [UIColor colorWithRed:0.92 green:0.59 blue:0.61 alpha:1.0];
         _statusDetailLabel.text = xbeFound
             ? @"default.xbe is invalid or corrupted.\nReplace it with a valid Xbox copy in:\nFiles → On My iPhone → MC3 Remix"
             : @"No Xbox game files found.\nCopy default.xbe and game folders into:\nFiles → On My iPhone → MC3 Remix";
@@ -708,7 +720,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
         _playButton.enabled = NO;
         [_playButton setTitle:@"GAME FILES NOT DETECTED" forState:UIControlStateDisabled];
         _playButton.backgroundColor = [UIColor colorWithRed:0.15 green:0.17 blue:0.21 alpha:1.0];
-        _playButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.14].CGColor;
+        _playButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
     }
 }
 

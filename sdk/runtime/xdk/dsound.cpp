@@ -856,7 +856,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
         g_done.clear();
     }
     Run(ctx, done);
-    hitch::AddDSound(hitch::NowUs() - t0);
+    hitch::AddDSound(hitch::NowUs() - t0, "DoWork", R32(ctx.esp));
     return 0;
 }
 // starts together every voice played or unpaused with the synch playback flag
@@ -1188,7 +1188,7 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
             flushed.swap(t_flushed);                            \
         }                                                       \
         Run(ctx, flushed);                                      \
-        hitch::AddDSound(hitch::NowUs() - t0);                  \
+        hitch::AddDSound(hitch::NowUs() - t0, #name, t_caller); \
         return r;                                               \
     }                                                           \
     static uint32_t str_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
@@ -1357,7 +1357,7 @@ HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
         flushed.swap(t_flushed);
     }
     Run(ctx, flushed);
-    hitch::AddDSound(hitch::NowUs() - t0);
+    hitch::AddDSound(hitch::NowUs() - t0, "FlushExC", t_caller);
     return r;
 }
 // the library's own writes voice registers a host stream does not have; envelopes are not played

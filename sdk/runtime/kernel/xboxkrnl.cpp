@@ -298,12 +298,25 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
         return kSuccess;
     }
     const uint64_t t0 = hitch::NowUs();
-    while (now() < deadline) {
-        int64_t left = deadline - now();
-        std::this_thread::sleep_for(std::chrono::nanoseconds(std::min<int64_t>(left, 2000000)));
-        if (alertable && t && RunApcs(*t)) {
-            hitch::AddWait(hitch::NowUs() - t0, 2, R32(ctx.esp));
-            return kUserApc;
+    if (!alertable) {
+        const int64_t left = deadline - now();
+        if (left > 300000) {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(left));
+        } else if (left > 0) {
+            std::this_thread::yield();
+        }
+    } else {
+        while (now() < deadline) {
+            int64_t left = deadline - now();
+            if (left > 300000) {
+                std::this_thread::sleep_for(std::chrono::nanoseconds(std::min<int64_t>(left, 2000000)));
+            } else {
+                std::this_thread::yield();
+            }
+            if (t && RunApcs(*t)) {
+                hitch::AddWait(hitch::NowUs() - t0, 2, R32(ctx.esp));
+                return kUserApc;
+            }
         }
     }
     hitch::AddWait(hitch::NowUs() - t0, 2, R32(ctx.esp));
@@ -668,7 +681,10 @@ KERNEL_EXPORT(230, NtSignalAndWaitForSingleObjectEx, 5) {
         default: return kObjectTypeMismatch;
     }
     if (st != kSuccess) return st;
-    return Wait({w}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait({w}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(233, NtWaitForSingleObject, 3) {

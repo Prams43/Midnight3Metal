@@ -114,6 +114,18 @@ fragment float4 blit_fs_rgba(BlitOut in [[stage_in]],
     return tex.sample(smp, in.uv);
 }
 
+fragment float4 speed_blur_fs(BlitOut in [[stage_in]],
+                              texture2d<float> tex [[texture(0)]],
+                              sampler smp [[sampler(0)]],
+                              constant float& strength [[buffer(0)]]) {
+    // Keep the road ahead and player car crisp; smoothly fade speed blur toward the outer edges.
+    float2 d = (in.uv - float2(0.5f, 0.56f)) * float2(1.0f, 1.25f);
+    float edge = smoothstep(0.22f, 0.72f, length(d));
+    float a = clamp(strength * 0.48f * edge, 0.0f, 0.42f);
+    float4 c = tex.sample(smp, in.uv);
+    return float4(c.rgb, a);
+}
+
 vertex float4 clear_vs(uint vid [[vertex_id]], constant float& depth_z [[buffer(0)]]) {
     float2 pos[3] = { float2(-1.0f, -1.0f), float2(3.0f, -1.0f), float2(-1.0f, 3.0f) };
     return float4(pos[vid], depth_z, 1.0f);
@@ -207,6 +219,7 @@ class MetalBackend final : public Backend {
 public:
     ~MetalBackend() override {
         Flush();
+        SaveBinaryArchive();
         if (frame_sem_) {
             for (uint32_t i = 0; i < kRingCount; ++i) {
                 dispatch_semaphore_wait(frame_sem_, DISPATCH_TIME_FOREVER);
@@ -282,6 +295,7 @@ public:
         id<MTLFunction> blitVs = [blitLib newFunctionWithName:@"blit_vs"];
         id<MTLFunction> blitFsOpaque = [blitLib newFunctionWithName:@"blit_fs_opaque"];
         id<MTLFunction> blitFsRgba = [blitLib newFunctionWithName:@"blit_fs_rgba"];
+        id<MTLFunction> speedBlurFs = [blitLib newFunctionWithName:@"speed_blur_fs"];
         clear_vs_ = [blitLib newFunctionWithName:@"clear_vs"];
         clear_fs_ = [blitLib newFunctionWithName:@"clear_fs"];
         if (blitVs && blitFsOpaque && blitFsRgba) {
@@ -292,7 +306,21 @@ public:
             blit_present_pso_ = [device_ newRenderPipelineStateWithDescriptor:bd error:&err];
             bd.fragmentFunction = blitFsRgba;
             blit_copy_pso_ = [device_ newRenderPipelineStateWithDescriptor:bd error:&err];
+            if (speedBlurFs) {
+                bd.fragmentFunction = speedBlurFs;
+                bd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+                bd.colorAttachments[0].blendingEnabled = YES;
+                bd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+                bd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+                bd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+                bd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+                bd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+                bd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+                speed_blur_pso_ = [device_ newRenderPipelineStateWithDescriptor:bd error:&err];
+            }
         }
+
+        InitBinaryArchive();
 
         // 1x1 white fallback texture for untextured draws, 1x1 transparent black for unrendered RTs
         MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -394,8 +422,8 @@ public:
                     int32_t r[4];
                     std::memcpy(r, rects + size_t(i) * sizeof(r), sizeof(r));
                     if (mm.active &&
-                        r[0] >= int32_t(mm.orig_x) - 24 && r[2] <= int32_t(mm.orig_x + mm.orig_w) + 24 &&
-                        r[1] >= int32_t(mm.orig_y) - 24 && r[3] <= int32_t(mm.orig_y + mm.orig_h) + 24) {
+                        r[0] >= int32_t(mm.orig_x) - 28 && r[2] <= int32_t(mm.orig_x + mm.orig_w) + 28 &&
+                        r[1] >= int32_t(mm.orig_y) - 28 && r[3] <= int32_t(mm.orig_y + mm.orig_h) + 28) {
                         if (mm.hidden) continue;
                         r[0] += int32_t(std::lround(mm.dx));
                         r[2] += int32_t(std::lround(mm.dx));
@@ -639,11 +667,9 @@ public:
         if (!target_h) target_h = guest_height_;
 
         // Resolve textures & TexInfo for all 4 stages
-        const bool use_aniso = g_aniso_enabled.load(std::memory_order_relaxed);
-        id<MTLSamplerState> base_clamp = (use_aniso && aniso_sampler_) ? aniso_sampler_ : sampler_;
-        id<MTLSamplerState> base_wrap = (use_aniso && aniso_wrap_sampler_) ? aniso_wrap_sampler_ : wrap_sampler_;
+        const bool use_aniso = g_aniso_enabled.load(std::memory_order_relaxed) && !a.pretransformed;
         id<MTLTexture> stage_tex[4] = { white_tex_, white_tex_, white_tex_, white_tex_ };
-        id<MTLSamplerState> stage_smp[4] = { base_clamp, base_clamp, base_clamp, base_clamp };
+        id<MTLSamplerState> stage_smp[4] = { sampler_, sampler_, sampler_, sampler_ };
         TexInfo tex_info[4]{};
         float tex_dims[4][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}};
         bool stage_is_rt[4] = {};
@@ -669,8 +695,12 @@ public:
                     tex_dims[t][1] = td.height ? float(td.height) : 1.0f;
                     const uint32_t addr_u = s.tss[size_t(t)][kTssAddressU];
                     const uint32_t addr_v = s.tss[size_t(t)][kTssAddressV];
-                    if (!td.linear && (addr_u == 1 || addr_v == 1)) {
-                        stage_smp[t] = base_wrap;
+                    const bool want_wrap = !td.linear && (addr_u == 1 || addr_v == 1);
+                    const bool stage_aniso = use_aniso && !is_rt && tex_info[t].kind == kTex2D && !td.linear;
+                    if (want_wrap) {
+                        stage_smp[t] = (stage_aniso && aniso_wrap_sampler_) ? aniso_wrap_sampler_ : wrap_sampler_;
+                    } else {
+                        stage_smp[t] = (stage_aniso && aniso_sampler_) ? aniso_sampler_ : sampler_;
                     }
                 }
             }
@@ -681,10 +711,12 @@ public:
         const uint32_t dst_b = s.simple[kMDestBlend / 4];
         const uint32_t blend_op = s.simple[kMBlendOp / 4];
 
-        // Suppress MC3's mcSenseOfSpeed half-resolution radial speed-blur composite unless the user
-        // explicitly enables original Xbox speed blur in the launcher settings.
-        if (!g_motion_blur_enabled.load(std::memory_order_relaxed) &&
-            a.pretransformed && prim == 6 && count == 4 &&
+        // MC3's mcSenseOfSpeed half-resolution radial speed-blur composite:
+        // - When Motion Blur is Off (default): suppress completely for razor-sharp visuals.
+        // - When Motion Blur is Balanced: render through speed_blur_fs so the center road ahead
+        //   stays crystal sharp while outer edges get smooth, speed-proportional peripheral blur
+        //   (instead of the raw 30fps-tuned 0.86 alpha smudge across the whole windshield).
+        if (a.pretransformed && prim == 6 && count == 4 &&
             s.vs_handle == 0x1C4 && !s.ps &&
             target_w == guest_width_ && target_h == guest_height_ &&
             s.viewport.x == 0 && s.viewport.y == 0 &&
@@ -692,7 +724,47 @@ public:
             stage_is_rt[0] && stage_rt_w[0] * 2 == target_w && stage_rt_h[0] * 2 == target_h &&
             !s.textures[1] && !s.textures[2] && !s.textures[3] &&
             blend_on && src_b == 0x302 && dst_b == 0x303) {
-            return;
+            if (!g_motion_blur_enabled.load(std::memory_order_relaxed)) {
+                return;
+            }
+            if (speed_blur_pso_ && EnsureEncoderFor(rt_va, zs_va, target_w, target_h)) {
+                float strength = 0.55f;
+                RegSrc c3_src{};
+                if (build_reg(3, c3_src)) {
+                    float c3[4] = {1, 1, 1, 0.55f};
+                    if (ReadReg(c3_src, 0, has_conv, conv_ptr, reg_count, c3)) {
+                        strength = std::clamp(c3[3], 0.0f, 1.0f);
+                    }
+                }
+                if (strength > 0.01f) {
+                    const uint32_t pw = active_ct_ ? active_ct_->phys_w : target_w;
+                    const uint32_t ph = active_ct_ ? active_ct_->phys_h : target_h;
+                    MTLScissorRect full_sc{0, 0, NSUInteger(pw), NSUInteger(ph)};
+                    [encoder_ setScissorRect:full_sc];
+                    bound_scissor_ = full_sc;
+                    bound_scissor_valid_ = true;
+                    [encoder_ setCullMode:MTLCullModeNone];
+                    bound_cull_valid_ = false;
+                    [encoder_ setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+                    bound_bias_valid_ = false;
+                    id<MTLDepthStencilState> no_z = GetDepthStencil(false, false, 8);
+                    if (no_z) {
+                        [encoder_ setDepthStencilState:no_z];
+                        bound_dss_ = no_z;
+                    }
+                    [encoder_ setRenderPipelineState:speed_blur_pso_];
+                    bound_pso_ = speed_blur_pso_;
+                    [encoder_ setFragmentTexture:stage_tex[0] atIndex:0];
+                    bound_tex_[0] = stage_tex[0];
+                    [encoder_ setFragmentSamplerState:sampler_ atIndex:0];
+                    bound_smp_[0] = sampler_;
+                    [encoder_ setFragmentBytes:&strength length:sizeof(strength) atIndex:0];
+                    [encoder_ drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+                    if (active_ct_) active_ct_->drawn = true;
+                    last_rt_va_ = rt_va;
+                }
+                return;
+            }
         }
 
         // Shift or hide 2D XYZRHW minimap frame/blip quads when the user moved or hid the minimap.
@@ -704,8 +776,8 @@ public:
                 mm = g_minimap_frame;
             }
             if (mm.active) {
-                const float min_x = mm.orig_x - 24.0f, max_x = mm.orig_x + mm.orig_w + 24.0f;
-                const float min_y = mm.orig_y - 24.0f, max_y = mm.orig_y + mm.orig_h + 24.0f;
+                const float min_x = mm.orig_x - 28.0f, max_x = mm.orig_x + mm.orig_w + 28.0f;
+                const float min_y = mm.orig_y - 28.0f, max_y = mm.orig_y + mm.orig_h + 28.0f;
                 bool all_in = true;
                 float* verts_f = a.vertices.data();
                 for (uint32_t i = 0; i < a.vertex_count; ++i) {
@@ -911,6 +983,42 @@ public:
         if (dss && dss != bound_dss_) {
             [encoder_ setDepthStencilState:dss];
             bound_dss_ = dss;
+        }
+
+        // Apply NV2A backface culling and polygon offset (depth bias) to eliminate road/decal
+        // Z-fighting (especially at 1.5x/2.0x resolution) and reduce fragment overdraw.
+        {
+            constexpr uint32_t kCullCw = 0x900;
+            const uint32_t cull = s.rs[kRsCullMode];
+            const bool cull_on = (cull != 0 && a.topology == Topology::Triangles);
+            const MTLCullMode want_cull = cull_on ? MTLCullModeBack : MTLCullModeNone;
+            const MTLWinding want_wind = (cull == kCullCw) ? MTLWindingCounterClockwise : MTLWindingClockwise;
+            if (!bound_cull_valid_ || bound_cull_ != want_cull || bound_winding_ != want_wind) {
+                [encoder_ setFrontFacingWinding:want_wind];
+                [encoder_ setCullMode:want_cull];
+                bound_cull_ = want_cull;
+                bound_winding_ = want_wind;
+                bound_cull_valid_ = true;
+            }
+
+            float depth_bias = 0.0f;
+            float depth_slope = 0.0f;
+            if (a.topology == Topology::Triangles && s.simple[kMSolidOffsetEnable / 4]) {
+                float raw_off = 0.0f, raw_slope = 0.0f;
+                std::memcpy(&raw_off, &s.simple[kMDepthOffset / 4], 4);
+                std::memcpy(&raw_slope, &s.simple[kMSlopeScale / 4], 4);
+                const float zscale = (s.zscale > 0.0f) ? s.zscale : 16777215.0f;
+                depth_bias = raw_off * (16777215.0f / zscale);
+                depth_slope = raw_slope * (float(phys_w) / float(target_w));
+            } else if (a.topology == Topology::Triangles && s.rs[kRsZBias] != 0) {
+                depth_bias = -float(std::min<uint32_t>(s.rs[kRsZBias], 16u)) * 2.0f;
+            }
+            if (!bound_bias_valid_ || bound_depth_bias_ != depth_bias || bound_depth_slope_ != depth_slope) {
+                [encoder_ setDepthBias:depth_bias slopeScale:depth_slope clamp:0.0f];
+                bound_depth_bias_ = depth_bias;
+                bound_depth_slope_ = depth_slope;
+                bound_bias_valid_ = true;
+            }
         }
         if (blend_on) {
             const uint32_t bc = s.simple[kMBlendColor / 4];
@@ -1148,6 +1256,9 @@ public:
             }
             ++frame_id_;
             g_presented_frames.fetch_add(1, std::memory_order_relaxed);
+            if (archive_dirty_ && frame_id_ >= archive_last_add_frame_ + 180) {
+                SaveBinaryArchive();
+            }
             {
                 std::lock_guard<std::mutex> lk(g_minimap_lock);
                 g_minimap_frame.active = false;
@@ -1455,8 +1566,23 @@ private:
                 desc.colorAttachments[0].sourceAlphaBlendFactor = ToMetalBlend(src_b, true);
                 desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, true);
             }
+            if (@available(iOS 14.0, macOS 11.0, *)) {
+                if (binary_archive_) {
+                    desc.binaryArchives = @[(id<MTLBinaryArchive>)binary_archive_];
+                }
+            }
             NSError* err = nil;
             id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
+            if (pso) {
+                if (@available(iOS 14.0, macOS 11.0, *)) {
+                    if (binary_archive_) {
+                        if ([(id<MTLBinaryArchive>)binary_archive_ addRenderPipelineFunctionsWithDescriptor:desc error:nil]) {
+                            archive_dirty_ = true;
+                            archive_last_add_frame_ = frame_id_;
+                        }
+                    }
+                }
+            }
             hitch::AddMetalCompile(hitch::NowUs() - t0);
             if (!pso) {
                 LOGE("metal: pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
@@ -1669,6 +1795,40 @@ private:
         return dt;
     }
 
+    void InitBinaryArchive() {
+        if (@available(iOS 14.0, macOS 11.0, *)) {
+            @autoreleasepool {
+                NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+                NSString* dir = caches.firstObject ?: NSTemporaryDirectory();
+                NSString* path = [dir stringByAppendingPathComponent:@"mc3_metal_pso_v1.metallib"];
+                archive_url_ = [NSURL fileURLWithPath:path];
+                MTLBinaryArchiveDescriptor* bad = [[MTLBinaryArchiveDescriptor alloc] init];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+                    bad.url = archive_url_;
+                }
+                NSError* err = nil;
+                binary_archive_ = [device_ newBinaryArchiveWithDescriptor:bad error:&err];
+                if (!binary_archive_ && bad.url) {
+                    // Existing cache from an older iOS/driver version — recreate cleanly.
+                    bad.url = nil;
+                    binary_archive_ = [device_ newBinaryArchiveWithDescriptor:bad error:&err];
+                }
+            }
+        }
+    }
+
+    void SaveBinaryArchive() {
+        if (!archive_dirty_) return;
+        archive_dirty_ = false;
+        if (@available(iOS 14.0, macOS 11.0, *)) {
+            if (binary_archive_ && archive_url_) {
+                @autoreleasepool {
+                    [(id<MTLBinaryArchive>)binary_archive_ serializeToURL:archive_url_ error:nil];
+                }
+            }
+        }
+    }
+
     void ResetEncoderState() {
         bound_pso_ = nil;
         bound_dss_ = nil;
@@ -1683,6 +1843,8 @@ private:
         bound_scissor_valid_ = false;
         bound_blend_color_valid_ = false;
         bound_vsc_valid_ = false;
+        bound_cull_valid_ = false;
+        bound_bias_valid_ = false;
     }
 
     bool AllocateRing(const void* data, size_t bytes, size_t align, __strong id<MTLBuffer>& out_buf, NSUInteger& out_off) {
@@ -2038,6 +2200,11 @@ private:
     id<MTLRenderPipelineState> pipeline_ = nil;
     id<MTLRenderPipelineState> blit_present_pso_ = nil;
     id<MTLRenderPipelineState> blit_copy_pso_ = nil;
+    id<MTLRenderPipelineState> speed_blur_pso_ = nil;
+    id binary_archive_ = nil;
+    NSURL* archive_url_ = nil;
+    bool archive_dirty_ = false;
+    uint64_t archive_last_add_frame_ = 0;
     id<MTLFunction> clear_vs_ = nil;
     id<MTLFunction> clear_fs_ = nil;
     std::unordered_map<uint32_t, id<MTLRenderPipelineState>> clear_pso_cache_;
@@ -2084,6 +2251,12 @@ private:
     bool bound_blend_color_valid_ = false;
     std::array<float, 192 * 4> bound_vsc_{};
     bool bound_vsc_valid_ = false;
+    MTLCullMode bound_cull_ = MTLCullModeNone;
+    MTLWinding bound_winding_ = MTLWindingClockwise;
+    bool bound_cull_valid_ = false;
+    float bound_depth_bias_ = 0.0f;
+    float bound_depth_slope_ = 0.0f;
+    bool bound_bias_valid_ = false;
 
     id<MTLCommandBuffer> cmd_buf_ = nil;
     id<MTLRenderCommandEncoder> encoder_ = nil;

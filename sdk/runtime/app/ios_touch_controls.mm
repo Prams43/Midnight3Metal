@@ -536,39 +536,49 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
     [self addSubview:_editOverlay];
 
     _editorPanel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 540, 94)];
-    _editorPanel.backgroundColor = [UIColor colorWithRed:0.06 green:0.08 blue:0.12 alpha:0.93];
-    _editorPanel.layer.cornerRadius = 14.0;
-    _editorPanel.layer.borderWidth = 1.2;
-    _editorPanel.layer.borderColor = [UIColor colorWithRed:0.25 green:0.80 blue:1.0 alpha:0.75].CGColor;
+    _editorPanel.backgroundColor = [UIColor colorWithRed:0.08 green:0.10 blue:0.14 alpha:0.68];
+    _editorPanel.layer.cornerRadius = 16.0;
+    _editorPanel.layer.borderWidth = 1.0;
+    _editorPanel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.26].CGColor;
     _editorPanel.layer.shadowColor = UIColor.blackColor.CGColor;
-    _editorPanel.layer.shadowOpacity = 0.65f;
+    _editorPanel.layer.shadowOpacity = 0.45f;
     _editorPanel.layer.shadowOffset = CGSizeMake(0, 4);
-    _editorPanel.layer.shadowRadius = 10.0;
+    _editorPanel.layer.shadowRadius = 12.0;
+    if (@available(iOS 13.0, *)) {
+        UIVisualEffectView* blur = [[UIVisualEffectView alloc] initWithEffect:
+            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+        blur.frame = _editorPanel.bounds;
+        blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        blur.layer.cornerRadius = 16.0;
+        blur.layer.masksToBounds = YES;
+        blur.userInteractionEnabled = NO;
+        [_editorPanel insertSubview:blur atIndex:0];
+    }
     _editorPanel.hidden = YES;
     [self addSubview:_editorPanel];
 
     _editorTargetLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _editorTargetLabel.text = @"ALL CONTROLS";
-    _editorTargetLabel.textColor = [UIColor colorWithRed:0.55 green:0.92 blue:1.0 alpha:1.0];
+    _editorTargetLabel.textColor = [UIColor colorWithRed:0.74 green:0.86 blue:0.98 alpha:1.0];
     _editorTargetLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightHeavy];
     _editorTargetLabel.adjustsFontSizeToFitWidth = YES;
     _editorTargetLabel.minimumScaleFactor = 0.72;
     [_editorPanel addSubview:_editorTargetLabel];
 
-    UIColor* neutralBg = [UIColor colorWithWhite:1.0 alpha:0.12];
-    UIColor* neutralBorder = [UIColor colorWithWhite:1.0 alpha:0.30];
+    UIColor* neutralBg = [UIColor colorWithWhite:1.0 alpha:0.11];
+    UIColor* neutralBorder = [UIColor colorWithWhite:1.0 alpha:0.26];
 
     _editorModeBtn = [self makeEditorPillWithTitle:@"DRIVE" bg:neutralBg border:neutralBorder action:@selector(editorToggleMode:)];
     _editorSteerBtn = [self makeEditorPillWithTitle:@"STICK" bg:neutralBg border:neutralBorder action:@selector(editorToggleSteer:)];
     _editorMapBtn = [self makeEditorPillWithTitle:@"MAP:ON" bg:neutralBg border:neutralBorder action:@selector(editorToggleMinimap:)];
     _editorFpsBtn = [self makeEditorPillWithTitle:@"FPS:ON" bg:neutralBg border:neutralBorder action:@selector(editorToggleFps:)];
     UIButton* resetBtn = [self makeEditorPillWithTitle:@"RESET"
-                                                    bg:[UIColor colorWithRed:0.45 green:0.12 blue:0.14 alpha:0.75]
-                                                border:[UIColor colorWithRed:1.0 green:0.42 blue:0.45 alpha:0.8]
+                                                    bg:[UIColor colorWithRed:0.34 green:0.16 blue:0.18 alpha:0.72]
+                                                border:[UIColor colorWithRed:0.86 green:0.52 blue:0.56 alpha:0.65]
                                                 action:@selector(editorResetLayout:)];
     UIButton* doneBtn = [self makeEditorPillWithTitle:@"DONE"
-                                                   bg:[UIColor colorWithRed:0.08 green:0.46 blue:0.28 alpha:0.88]
-                                               border:[UIColor colorWithRed:0.32 green:0.98 blue:0.65 alpha:0.9]
+                                                   bg:[UIColor colorWithRed:0.18 green:0.46 blue:0.39 alpha:0.82]
+                                               border:[UIColor colorWithRed:0.52 green:0.84 blue:0.74 alpha:0.70]
                                                action:@selector(toggleEditMode:)];
     doneBtn.tag = 999;
     resetBtn.tag = 998;
@@ -580,14 +590,14 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
     [_editorPanel addSubview:doneBtn];
 
     _editorAllBtn = [self makeEditorPillWithTitle:@"ALL"
-                                               bg:[UIColor colorWithRed:0.12 green:0.36 blue:0.52 alpha:0.85]
-                                           border:[UIColor colorWithRed:0.35 green:0.85 blue:1.0 alpha:0.9]
+                                               bg:[UIColor colorWithRed:0.24 green:0.44 blue:0.64 alpha:0.80]
+                                           border:[UIColor colorWithRed:0.62 green:0.82 blue:0.98 alpha:0.70]
                                            action:@selector(editorSelectAll:)];
     [_editorPanel addSubview:_editorAllBtn];
 
     _sizeValueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _sizeValueLabel.text = @"ALL SIZE 100%";
-    _sizeValueLabel.textColor = UIColor.whiteColor;
+    _sizeValueLabel.textColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     _sizeValueLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
     [_editorPanel addSubview:_sizeValueLabel];
 
@@ -595,13 +605,13 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
     _sizeSlider.minimumValue = static_cast<float>(kMinGlobalScale);
     _sizeSlider.maximumValue = static_cast<float>(kMaxGlobalScale);
     _sizeSlider.value = 1.0f;
-    _sizeSlider.minimumTrackTintColor = [UIColor colorWithRed:0.22 green:0.80 blue:1.0 alpha:1.0];
+    _sizeSlider.minimumTrackTintColor = [UIColor colorWithRed:0.46 green:0.70 blue:0.92 alpha:1.0];
     [_sizeSlider addTarget:self action:@selector(sizeSliderChanged:) forControlEvents:UIControlEventValueChanged];
     [_editorPanel addSubview:_sizeSlider];
 
     _opacityValueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     _opacityValueLabel.text = @"OPACITY 100%";
-    _opacityValueLabel.textColor = UIColor.whiteColor;
+    _opacityValueLabel.textColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     _opacityValueLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
     [_editorPanel addSubview:_opacityValueLabel];
 
@@ -609,7 +619,7 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
     _opacitySlider.minimumValue = static_cast<float>(kMinOpacity);
     _opacitySlider.maximumValue = static_cast<float>(kMaxOpacity);
     _opacitySlider.value = 1.0f;
-    _opacitySlider.minimumTrackTintColor = [UIColor colorWithRed:0.30 green:0.95 blue:0.62 alpha:1.0];
+    _opacitySlider.minimumTrackTintColor = [UIColor colorWithRed:0.44 green:0.76 blue:0.66 alpha:1.0];
     [_opacitySlider addTarget:self action:@selector(opacitySliderChanged:) forControlEvents:UIControlEventValueChanged];
     [_editorPanel addSubview:_opacitySlider];
 }
@@ -803,22 +813,22 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
                         x:kHudGearX y:kTopBarY baseW:40 baseH:40 baseRadius:10.0
                     style:ButtonStyle::TopPill hasIcon:gearIcon isDriving:NO isMenu:NO isGlobal:YES isButton:YES isFps:NO isMinimap:NO];
 
-    // Live FPS counter pill (visible in both Driving and Menu modes, toggleable & draggable)
+    // Live FPS counter pill (iOS Liquid Glass capsule, toggleable & draggable)
     _fpsLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 62, 24)];
     _fpsLabel.text = @"-- FPS";
     _fpsLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightBold];
-    _fpsLabel.textColor = [UIColor colorWithRed:0.35 green:0.98 blue:0.55 alpha:1.0];
+    _fpsLabel.textColor = [UIColor colorWithRed:0.62 green:0.92 blue:0.78 alpha:1.0];
     _fpsLabel.textAlignment = NSTextAlignmentCenter;
-    _fpsLabel.backgroundColor = [UIColor colorWithRed:0.04 green:0.06 blue:0.09 alpha:0.52];
-    _fpsLabel.layer.cornerRadius = 9.0;
+    _fpsLabel.backgroundColor = [UIColor colorWithRed:0.14 green:0.18 blue:0.24 alpha:0.34];
+    _fpsLabel.layer.cornerRadius = 12.0;
     _fpsLabel.layer.masksToBounds = YES;
     _fpsLabel.layer.borderWidth = 1.0;
-    _fpsLabel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.28].CGColor;
+    _fpsLabel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.34].CGColor;
     _fpsLabel.userInteractionEnabled = NO;
     _fpsLabel.autoresizingMask = UIViewAutoresizingNone;
     [self addSubview:_fpsLabel];
     [self registerItemKey:@"hud_fps" displayName:@"FPS COUNTER" view:_fpsLabel
-                        x:kFpsPillX y:kTopBarY baseW:62 baseH:24 baseRadius:9.0
+                        x:kFpsPillX y:kTopBarY baseW:62 baseH:24 baseRadius:12.0
                     style:ButtonStyle::TopPill hasIcon:NO isDriving:NO isMenu:NO isGlobal:YES isButton:NO isFps:YES isMinimap:NO];
 
     [self buildEditorUi];
@@ -1287,11 +1297,11 @@ BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallba
         _fpsLastFrames = frames;
         _fpsLabel.text = [NSString stringWithFormat:@"%.0f FPS", fps];
         if (fps >= 50.0) {
-            _fpsLabel.textColor = [UIColor colorWithRed:0.35 green:0.98 blue:0.55 alpha:1.0];
+            _fpsLabel.textColor = [UIColor colorWithRed:0.62 green:0.92 blue:0.78 alpha:1.0];
         } else if (fps >= 30.0) {
-            _fpsLabel.textColor = [UIColor colorWithRed:1.0 green:0.80 blue:0.25 alpha:1.0];
+            _fpsLabel.textColor = [UIColor colorWithRed:0.95 green:0.82 blue:0.46 alpha:1.0];
         } else {
-            _fpsLabel.textColor = [UIColor colorWithRed:1.0 green:0.38 blue:0.38 alpha:1.0];
+            _fpsLabel.textColor = [UIColor colorWithRed:0.95 green:0.54 blue:0.56 alpha:1.0];
         }
     }
 
