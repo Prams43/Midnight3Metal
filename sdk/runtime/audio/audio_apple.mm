@@ -25,6 +25,7 @@ constexpr UInt32 kBufferCount = 3;
 std::mutex g_render_mutex;
 std::function<void(float*, uint32_t)> g_render;
 std::atomic<bool> g_queue_started{false};
+std::atomic<bool> g_muted{false};
 
 struct QueueState {
     std::array<AudioQueueBufferRef, kBufferCount> buffers{};
@@ -35,6 +36,9 @@ void FillBuffer(void* opaque, AudioQueueRef queue, AudioQueueBufferRef buffer) {
         std::lock_guard<std::mutex> lk(g_render_mutex);
         if (g_render) {
             g_render(reinterpret_cast<float*>(buffer->mAudioData), kFramesPerBuffer);
+            if (g_muted.load(std::memory_order_relaxed)) {
+                std::memset(buffer->mAudioData, 0, kFramesPerBuffer * 2 * sizeof(float));
+            }
         } else {
             std::memset(buffer->mAudioData, 0, kFramesPerBuffer * 2 * sizeof(float));
         }
@@ -107,6 +111,14 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
     // The runtime has no audio stop hook; retain queue state for process lifetime.
     state.release();
     LOGI("audio: AudioQueue started (%u Hz stereo float)", unsigned(kRate));
+}
+
+void SetMuted(bool muted) {
+    g_muted.store(muted, std::memory_order_relaxed);
+}
+
+bool IsMuted() {
+    return g_muted.load(std::memory_order_relaxed);
 }
 
 }  // namespace audio

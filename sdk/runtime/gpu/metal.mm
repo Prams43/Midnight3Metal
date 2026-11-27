@@ -4,6 +4,7 @@
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
+#include "core/hitch_prof.h"
 #include "core/log.h"
 #include "kernel/kernel.h"
 
@@ -20,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -30,6 +32,21 @@ namespace {
 
 CAMetalLayer* g_metal_layer = nil;
 std::atomic<uint32_t> g_presented_frames{0};
+std::atomic<float> g_res_scale{1.0f};
+std::atomic<bool> g_aniso_enabled{true};
+std::atomic<bool> g_motion_blur_enabled{false};
+std::atomic<uint32_t> g_target_fps{60};
+
+std::mutex g_minimap_lock;
+MinimapConfig g_minimap_cfg{};
+
+struct MinimapFrameState {
+    bool active = false;
+    bool hidden = false;
+    float orig_x = 0.0f, orig_y = 0.0f, orig_w = 0.0f, orig_h = 0.0f;
+    float dx = 0.0f, dy = 0.0f;
+};
+MinimapFrameState g_minimap_frame{};
 
 struct MetalVertex {
     float v[16][4];
@@ -300,6 +317,14 @@ public:
         sd.tAddressMode = MTLSamplerAddressModeRepeat;
         wrap_sampler_ = [device_ newSamplerStateWithDescriptor:sd];
 
+        sd.maxAnisotropy = 8;
+        sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+        sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        aniso_sampler_ = [device_ newSamplerStateWithDescriptor:sd];
+        sd.sAddressMode = MTLSamplerAddressModeRepeat;
+        sd.tAddressMode = MTLSamplerAddressModeRepeat;
+        aniso_wrap_sampler_ = [device_ newSamplerStateWithDescriptor:sd];
+
         // Triple-buffered transient upload ring for vertices, indices, and constants (zero per-draw Metal allocs)
         frame_sem_ = dispatch_semaphore_create(kRingCount);
         const MTLResourceOptions ring_opts =
@@ -340,12 +365,23 @@ public:
             if (!w) w = guest_width_;
             if (!h) h = guest_height_;
 
+            uint32_t phys_w = w, phys_h = h;
+            PhysicalTargetSize(w, h, phys_w, phys_h);
+            const double scale_x = double(phys_w) / double(w);
+            const double scale_y = double(phys_h) / double(h);
+
+            MinimapFrameState mm{};
+            if (w == guest_width_ && h == guest_height_) {
+                std::lock_guard<std::mutex> lk(g_minimap_lock);
+                mm = g_minimap_frame;
+            }
+
             std::vector<MTLScissorRect> rs;
             auto add_rect = [&](int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
-                const int32_t cx0 = std::clamp<int32_t>(x0, 0, int32_t(w));
-                const int32_t cy0 = std::clamp<int32_t>(y0, 0, int32_t(h));
-                const int32_t cx1 = std::clamp<int32_t>(x1, 0, int32_t(w));
-                const int32_t cy1 = std::clamp<int32_t>(y1, 0, int32_t(h));
+                const int32_t cx0 = std::clamp<int32_t>(int32_t(std::floor(x0 * scale_x)), 0, int32_t(phys_w));
+                const int32_t cy0 = std::clamp<int32_t>(int32_t(std::floor(y0 * scale_y)), 0, int32_t(phys_h));
+                const int32_t cx1 = std::clamp<int32_t>(int32_t(std::ceil(x1 * scale_x)), 0, int32_t(phys_w));
+                const int32_t cy1 = std::clamp<int32_t>(int32_t(std::ceil(y1 * scale_y)), 0, int32_t(phys_h));
                 if (cx1 > cx0 && cy1 > cy0) {
                     rs.push_back(MTLScissorRect{
                         NSUInteger(cx0), NSUInteger(cy0),
@@ -357,18 +393,29 @@ public:
                 for (uint32_t i = 0; i < count; ++i) {
                     int32_t r[4];
                     std::memcpy(r, rects + size_t(i) * sizeof(r), sizeof(r));
+                    if (mm.active &&
+                        r[0] >= int32_t(mm.orig_x) - 24 && r[2] <= int32_t(mm.orig_x + mm.orig_w) + 24 &&
+                        r[1] >= int32_t(mm.orig_y) - 24 && r[3] <= int32_t(mm.orig_y + mm.orig_h) + 24) {
+                        if (mm.hidden) continue;
+                        r[0] += int32_t(std::lround(mm.dx));
+                        r[2] += int32_t(std::lround(mm.dx));
+                        r[1] += int32_t(std::lround(mm.dy));
+                        r[3] += int32_t(std::lround(mm.dy));
+                    }
                     add_rect(r[0], r[1], r[2], r[3]);
                 }
             } else if (s.viewport.w && s.viewport.h) {
                 add_rect(int32_t(s.viewport.x), int32_t(s.viewport.y),
                          int32_t(s.viewport.x + s.viewport.w), int32_t(s.viewport.y + s.viewport.h));
+            } else if (mm.active && mm.hidden && s.viewport.w == 0 && s.viewport.h == 0) {
+                return;
             } else {
                 add_rect(0, 0, int32_t(w), int32_t(h));
             }
             if (rs.empty()) return;
 
             const bool full_rect = (rs.size() == 1 && rs[0].x == 0 && rs[0].y == 0 &&
-                                    rs[0].width == w && rs[0].height == h);
+                                    rs[0].width == phys_w && rs[0].height == phys_h);
             const float r_f = ((color >> 16) & 0xFF) / 255.0f;
             const float g_f = ((color >> 8) & 0xFF) / 255.0f;
             const float b_f = (color & 0xFF) / 255.0f;
@@ -592,8 +639,11 @@ public:
         if (!target_h) target_h = guest_height_;
 
         // Resolve textures & TexInfo for all 4 stages
+        const bool use_aniso = g_aniso_enabled.load(std::memory_order_relaxed);
+        id<MTLSamplerState> base_clamp = (use_aniso && aniso_sampler_) ? aniso_sampler_ : sampler_;
+        id<MTLSamplerState> base_wrap = (use_aniso && aniso_wrap_sampler_) ? aniso_wrap_sampler_ : wrap_sampler_;
         id<MTLTexture> stage_tex[4] = { white_tex_, white_tex_, white_tex_, white_tex_ };
-        id<MTLSamplerState> stage_smp[4] = { sampler_, sampler_, sampler_, sampler_ };
+        id<MTLSamplerState> stage_smp[4] = { base_clamp, base_clamp, base_clamp, base_clamp };
         TexInfo tex_info[4]{};
         float tex_dims[4][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}};
         bool stage_is_rt[4] = {};
@@ -608,8 +658,8 @@ public:
                     stage_tex[t] = mt;
                     stage_is_rt[t] = is_rt;
                     if (is_rt) {
-                        stage_rt_w[t] = uint32_t(mt.width);
-                        stage_rt_h[t] = uint32_t(mt.height);
+                        stage_rt_w[t] = td.width;
+                        stage_rt_h[t] = td.height;
                     }
                     tex_info[t].kind = (mt.textureType == MTLTextureTypeCube) ? kTexCube
                                      : (mt.textureType == MTLTextureType3D)   ? kTex3D
@@ -620,7 +670,7 @@ public:
                     const uint32_t addr_u = s.tss[size_t(t)][kTssAddressU];
                     const uint32_t addr_v = s.tss[size_t(t)][kTssAddressV];
                     if (!td.linear && (addr_u == 1 || addr_v == 1)) {
-                        stage_smp[t] = wrap_sampler_;
+                        stage_smp[t] = base_wrap;
                     }
                 }
             }
@@ -631,10 +681,10 @@ public:
         const uint32_t dst_b = s.simple[kMDestBlend / 4];
         const uint32_t blend_op = s.simple[kMBlendOp / 4];
 
-        // Suppress MC3's mcSenseOfSpeed half-resolution radial speed-blur composite
-        // (same narrow signature as D3D12Backend::Draw), which accumulates heavy 480p
-        // ghosting across frames at 60+ FPS while leaving additive glow/HUD/video intact.
-        if (a.pretransformed && prim == 6 && count == 4 &&
+        // Suppress MC3's mcSenseOfSpeed half-resolution radial speed-blur composite unless the user
+        // explicitly enables original Xbox speed blur in the launcher settings.
+        if (!g_motion_blur_enabled.load(std::memory_order_relaxed) &&
+            a.pretransformed && prim == 6 && count == 4 &&
             s.vs_handle == 0x1C4 && !s.ps &&
             target_w == guest_width_ && target_h == guest_height_ &&
             s.viewport.x == 0 && s.viewport.y == 0 &&
@@ -643,6 +693,39 @@ public:
             !s.textures[1] && !s.textures[2] && !s.textures[3] &&
             blend_on && src_b == 0x302 && dst_b == 0x303) {
             return;
+        }
+
+        // Shift or hide 2D XYZRHW minimap frame/blip quads when the user moved or hid the minimap.
+        if (a.pretransformed && has_conv && target_w == guest_width_ && target_h == guest_height_ &&
+            a.vertex_count > 0 && a.vertex_count <= 128 && reg_count > 0) {
+            MinimapFrameState mm{};
+            {
+                std::lock_guard<std::mutex> lk(g_minimap_lock);
+                mm = g_minimap_frame;
+            }
+            if (mm.active) {
+                const float min_x = mm.orig_x - 24.0f, max_x = mm.orig_x + mm.orig_w + 24.0f;
+                const float min_y = mm.orig_y - 24.0f, max_y = mm.orig_y + mm.orig_h + 24.0f;
+                bool all_in = true;
+                float* verts_f = a.vertices.data();
+                for (uint32_t i = 0; i < a.vertex_count; ++i) {
+                    const float vx = verts_f[size_t(i) * size_t(reg_count) * 4 + 0];
+                    const float vy = verts_f[size_t(i) * size_t(reg_count) * 4 + 1];
+                    if (vx < min_x || vx > max_x || vy < min_y || vy > max_y) {
+                        all_in = false;
+                        break;
+                    }
+                }
+                if (all_in) {
+                    if (mm.hidden) return;
+                    if (mm.dx != 0.0f || mm.dy != 0.0f) {
+                        for (uint32_t i = 0; i < a.vertex_count; ++i) {
+                            verts_f[size_t(i) * size_t(reg_count) * 4 + 0] += mm.dx;
+                            verts_f[size_t(i) * size_t(reg_count) * 4 + 1] += mm.dy;
+                        }
+                    }
+                }
+            }
         }
 
         // Determine active vertex registers supplied by our full 16-register MetalVertex layout
@@ -752,9 +835,24 @@ public:
             vb_bytes = size_t(a.vertex_count) * sizeof(MetalVertex);
         }
 
+        // Skip draws when viewport was intentionally zeroed (e.g. hidden minimap).
+        if (s.viewport.w == 0 && s.viewport.h == 0) {
+            MinimapFrameState mm{};
+            {
+                std::lock_guard<std::mutex> lk(g_minimap_lock);
+                mm = g_minimap_frame;
+            }
+            if (mm.active && mm.hidden) return;
+        }
+
         if (!EnsureEncoderFor(rt_va, zs_va, target_w, target_h)) return;
         if (active_ct_) active_ct_->drawn = true;
         last_rt_va_ = rt_va;
+
+        const uint32_t phys_w = active_ct_ ? active_ct_->phys_w : target_w;
+        const uint32_t phys_h = active_ct_ ? active_ct_->phys_h : target_h;
+        const double sc_scale_x = double(phys_w) / double(target_w);
+        const double sc_scale_y = double(phys_h) / double(target_h);
 
         // Always clip to the active viewport (and any explicit scissor rect) just like
         // Xbox D3D8/NV2A, so sub-viewport draws such as the minimap never bleed outside.
@@ -771,14 +869,14 @@ public:
             sx1 = std::min<int32_t>(sx1, int32_t(s.scissors[2]));
             sy1 = std::min<int32_t>(sy1, int32_t(s.scissors[3]));
         }
-        sx0 = std::clamp<int32_t>(sx0, 0, int32_t(target_w));
-        sy0 = std::clamp<int32_t>(sy0, 0, int32_t(target_h));
-        sx1 = std::clamp<int32_t>(sx1, 0, int32_t(target_w));
-        sy1 = std::clamp<int32_t>(sy1, 0, int32_t(target_h));
-        if (sx1 <= sx0 || sy1 <= sy0) return;
+        const int32_t psx0 = std::clamp<int32_t>(int32_t(std::floor(sx0 * sc_scale_x)), 0, int32_t(phys_w));
+        const int32_t psy0 = std::clamp<int32_t>(int32_t(std::floor(sy0 * sc_scale_y)), 0, int32_t(phys_h));
+        const int32_t psx1 = std::clamp<int32_t>(int32_t(std::ceil(sx1 * sc_scale_x)), 0, int32_t(phys_w));
+        const int32_t psy1 = std::clamp<int32_t>(int32_t(std::ceil(sy1 * sc_scale_y)), 0, int32_t(phys_h));
+        if (psx1 <= psx0 || psy1 <= psy0) return;
         const MTLScissorRect sc{
-            NSUInteger(sx0), NSUInteger(sy0),
-            NSUInteger(sx1 - sx0), NSUInteger(sy1 - sy0)
+            NSUInteger(psx0), NSUInteger(psy0),
+            NSUInteger(psx1 - psx0), NSUInteger(psy1 - psy0)
         };
         if (!bound_scissor_valid_ ||
             sc.x != bound_scissor_.x || sc.y != bound_scissor_.y ||
@@ -970,14 +1068,14 @@ public:
                 auto& dst_ct = EnsureColorTarget(dst_va, dw, dh);
                 EndEncoder();
                 if (!EnsureCommandBuffer()) return;
-                if (count == 0 && src_it->second.w == dst_ct.w && src_it->second.h == dst_ct.h) {
+                if (count == 0 && src_it->second.phys_w == dst_ct.phys_w && src_it->second.phys_h == dst_ct.phys_h) {
                     id<MTLBlitCommandEncoder> blit = [cmd_buf_ blitCommandEncoder];
                     if (blit) {
                         [blit copyFromTexture:src_it->second.tex
                                   sourceSlice:0
                                   sourceLevel:0
                                  sourceOrigin:MTLOriginMake(0, 0, 0)
-                                   sourceSize:MTLSizeMake(dst_ct.w, dst_ct.h, 1)
+                                   sourceSize:MTLSizeMake(dst_ct.phys_w, dst_ct.phys_h, 1)
                                     toTexture:dst_ct.tex
                              destinationSlice:0
                              destinationLevel:0
@@ -1050,6 +1148,10 @@ public:
             }
             ++frame_id_;
             g_presented_frames.fetch_add(1, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lk(g_minimap_lock);
+                g_minimap_frame.active = false;
+            }
         }
     }
 
@@ -1059,6 +1161,7 @@ public:
     void SyncLate(uint32_t) override {}
 
     void Flush() override {
+        const uint64_t t0 = hitch::NowUs();
         @autoreleasepool {
             EndEncoder();
             if (cmd_buf_) {
@@ -1071,6 +1174,7 @@ public:
                 last_cmd_buf_ = nil;
             }
         }
+        hitch::AddD3dFlush(hitch::NowUs() - t0);
     }
 
     void SetGamma(const uint8_t*) override {}
@@ -1111,6 +1215,7 @@ private:
     id<MTLFunction> GetOrCompileFunction(uint64_t hash, const std::string& msl, NSString* entry,
                                          std::unordered_map<uint64_t, id<MTLFunction>>& cache) {
         if (auto it = cache.find(hash); it != cache.end()) return it->second;
+        const uint64_t t0 = hitch::NowUs();
         @autoreleasepool {
             NSError* err = nil;
             MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
@@ -1121,10 +1226,12 @@ private:
                     LOGE("metal: MSL compile failed (%s): %s", [entry UTF8String], [[err localizedDescription] UTF8String]);
                 }
                 cache[hash] = nil;
+                hitch::AddMetalCompile(hitch::NowUs() - t0);
                 return nil;
             }
             id<MTLFunction> fn = [lib newFunctionWithName:entry];
             cache[hash] = fn;
+            hitch::AddMetalCompile(hitch::NowUs() - t0);
             return fn;
         }
     }
@@ -1329,6 +1436,7 @@ private:
                              (uint64_t(vd_regs) * 0x94D049BB133111EBull);
         if (auto it = pso_cache_.find(key); it != pso_cache_.end()) return it->second;
 
+        const uint64_t t0 = hitch::NowUs();
         @autoreleasepool {
             MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
             desc.vertexFunction = vs;
@@ -1349,6 +1457,7 @@ private:
             }
             NSError* err = nil;
             id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
+            hitch::AddMetalCompile(hitch::NowUs() - t0);
             if (!pso) {
                 LOGE("metal: pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
                 return nil;
@@ -1484,6 +1593,7 @@ private:
     struct ColorTarget {
         id<MTLTexture> tex = nil;
         uint32_t w = 0, h = 0;
+        uint32_t phys_w = 0, phys_h = 0;
         bool pending_clear = true;
         MTLClearColor clear_color = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
         bool drawn = false;
@@ -1493,24 +1603,40 @@ private:
     struct DepthTarget {
         id<MTLTexture> tex = nil;
         uint32_t w = 0, h = 0;
+        uint32_t phys_w = 0, phys_h = 0;
         bool pending_clear = true;
         double clear_depth = 1.0;
     };
 
+    void PhysicalTargetSize(uint32_t w, uint32_t h, uint32_t& pw, uint32_t& ph) const {
+        const float scale = std::clamp(g_res_scale.load(std::memory_order_relaxed), 1.0f, 2.0f);
+        if (scale > 1.01f && w == guest_width_ && h == guest_height_) {
+            pw = uint32_t(std::lround(double(w) * double(scale)));
+            ph = uint32_t(std::lround(double(h) * double(scale)));
+        } else {
+            pw = w;
+            ph = h;
+        }
+    }
+
     ColorTarget& EnsureColorTarget(uint32_t rt_va, uint32_t w, uint32_t h) {
         if (!w) w = guest_width_;
         if (!h) h = guest_height_;
+        uint32_t pw = w, ph = h;
+        PhysicalTargetSize(w, h, pw, ph);
         auto& ct = color_rts_[rt_va];
-        if (!ct.tex || ct.w != w || ct.h != h) {
+        if (!ct.tex || ct.w != w || ct.h != h || ct.phys_w != pw || ct.phys_h != ph) {
             MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                          width:w
-                                                                                         height:h
+                                                                                          width:pw
+                                                                                         height:ph
                                                                                       mipmapped:NO];
             td.storageMode = MTLStorageModePrivate;
             td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             ct.tex = [device_ newTextureWithDescriptor:td];
             ct.w = w;
             ct.h = h;
+            ct.phys_w = pw;
+            ct.phys_h = ph;
             ct.pending_clear = true;
             ct.clear_color = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
             ct.drawn = false;
@@ -1521,18 +1647,22 @@ private:
     DepthTarget& EnsureDepthTarget(uint32_t zs_va, uint32_t w, uint32_t h) {
         if (!w) w = guest_width_;
         if (!h) h = guest_height_;
+        uint32_t pw = w, ph = h;
+        PhysicalTargetSize(w, h, pw, ph);
         const uint64_t key = (uint64_t(zs_va) << 32) | (uint64_t(w & 0xFFFFu) << 16) | uint64_t(h & 0xFFFFu);
         auto& dt = depth_rts_[key];
-        if (!dt.tex || dt.w != w || dt.h != h) {
+        if (!dt.tex || dt.w != w || dt.h != h || dt.phys_w != pw || dt.phys_h != ph) {
             MTLTextureDescriptor* dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                                                                          width:w
-                                                                                         height:h
+                                                                                          width:pw
+                                                                                         height:ph
                                                                                       mipmapped:NO];
             dd.storageMode = MTLStorageModePrivate;
             dd.usage = MTLTextureUsageRenderTarget;
             dt.tex = [device_ newTextureWithDescriptor:dd];
             dt.w = w;
             dt.h = h;
+            dt.phys_w = pw;
+            dt.phys_h = ph;
             dt.pending_clear = true;
             dt.clear_depth = 1.0;
         }
@@ -1722,6 +1852,7 @@ private:
             return entry.tex;
         }
 
+        const uint64_t tex_t0 = hitch::NowUs();
         const uint32_t* pal = pal_data_va ? pal_buf : nullptr;
         const bool can_reuse = same_meta && entry.tex.pixelFormat == mtl_fmt &&
                                (entry.last_used_frame + kRingCount <= frame_id_);
@@ -1846,6 +1977,7 @@ private:
                        bytesPerRow:pitch];
             }
             entry = {tex, d.format, d.width, d.height, d.depth, epoch, pal_hash, frame_id_, frame_id_};
+            hitch::AddMetalTex(hitch::NowUs() - tex_t0);
             return tex;
         }
     }
@@ -1914,6 +2046,8 @@ private:
     id<MTLTexture> feedback_tex_ = nil;
     id<MTLSamplerState> sampler_ = nil;
     id<MTLSamplerState> wrap_sampler_ = nil;
+    id<MTLSamplerState> aniso_sampler_ = nil;
+    id<MTLSamplerState> aniso_wrap_sampler_ = nil;
     std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pso_cache_;
     std::unordered_map<uint16_t, MTLVertexDescriptor*> vd_cache_;
     std::unordered_map<uint64_t, id<MTLFunction>> vs_cache_;
@@ -1967,6 +2101,60 @@ void SetMetalLayer(void* ca_metal_layer) {
 
 uint32_t PresentedFrameCount() {
     return g_presented_frames.load(std::memory_order_relaxed);
+}
+
+void SetResolutionScale(float scale) {
+    g_res_scale.store(std::clamp(scale, 1.0f, 2.0f), std::memory_order_relaxed);
+}
+
+float GetResolutionScale() {
+    return g_res_scale.load(std::memory_order_relaxed);
+}
+
+void SetAnisotropicFiltering(bool enabled) {
+    g_aniso_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool GetAnisotropicFiltering() {
+    return g_aniso_enabled.load(std::memory_order_relaxed);
+}
+
+void SetMotionBlurEnabled(bool enabled) {
+    g_motion_blur_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool GetMotionBlurEnabled() {
+    return g_motion_blur_enabled.load(std::memory_order_relaxed);
+}
+
+void SetTargetFps(uint32_t fps) {
+    g_target_fps.store((fps == 30) ? 30u : 60u, std::memory_order_relaxed);
+}
+
+uint32_t GetTargetFps() {
+    return g_target_fps.load(std::memory_order_relaxed);
+}
+
+void SetMinimapConfig(const MinimapConfig& cfg) {
+    std::lock_guard<std::mutex> lk(g_minimap_lock);
+    g_minimap_cfg = cfg;
+}
+
+MinimapConfig GetMinimapConfig() {
+    std::lock_guard<std::mutex> lk(g_minimap_lock);
+    return g_minimap_cfg;
+}
+
+void ReportMinimapFrame(bool active, bool hidden, float orig_x, float orig_y, float orig_w, float orig_h, float dx, float dy) {
+    std::lock_guard<std::mutex> lk(g_minimap_lock);
+    g_minimap_frame.active = active;
+    g_minimap_frame.hidden = hidden;
+    g_minimap_frame.orig_x = orig_x;
+    g_minimap_frame.orig_y = orig_y;
+    g_minimap_frame.orig_w = orig_w;
+    g_minimap_frame.orig_h = orig_h;
+    g_minimap_frame.dx = dx;
+    g_minimap_frame.dy = dy;
 }
 
 std::unique_ptr<Backend> CreateBackend() {

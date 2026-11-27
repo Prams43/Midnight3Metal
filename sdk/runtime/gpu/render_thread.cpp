@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "core/diag.h"
+#include "core/hitch_prof.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "kernel/kernel.h"
@@ -453,6 +454,7 @@ private:
             done_cv_.wait(lock, [&] { return done_.load() >= id; });
         }
         uint64_t ns = Ns(t);
+        hitch::AddRenderWait(ns / 1000);
         g_perf_wait_ns += ns;
         g_perf_wait_kind_ns[size_t(kind)] += ns;
         if (why) {

@@ -34,11 +34,13 @@ Instead of running an x86 emulator or JIT, the original Xbox executable (`defaul
   - Triple-buffered transient upload ring buffer (`MTLBuffer`), zero-copy tightly-packed vertex layouts, native triangle-strip/index submission, and per-encoder state caching for smooth 50–60 FPS gameplay without lowering visual quality.
 - **Xbox DirectSound & XACT Software Mixer (`sdk/runtime/xdk/dsound.cpp`)**
   - Full HLE DirectSound buffer & stream mixer running on Apple Audio Queue Services (`48 kHz` stereo float) with ADPCM/PCM decoding, 3D audio attenuation, mixbins, envelopes, and proper `IDirectSoundStream::FlushEx` / envelope-flush lifecycle handling.
-- **Native Mobile Racing Touch Controls, In-Game HUD Editor & Gamepad Support (`sdk/runtime/app/ios_touch_controls.mm`)**
-  - **Auto-switching HUD** between **Driving Mode** (analog steering or toggleable left/right arrows, `GAS`, `BRAKE`, `NOS`, `DRIFT`, `SPEC`, `2W`, plus top utility pills `MAP`, `CAM`, `REAR`, `FLASH`, pause, and next track) and **Menu / Garage Mode** (`OK`, `BACK`, `OPTS`, `VIEW`, `TAB`, `ZOOM`, `START`, D-pad).
-  - **In-game HUD & Controls Editor (`⚙`)**: drag any button, steering control, or FPS pill to reposition it, resize individual buttons or global HUD scale, adjust HUD opacity, toggle the FPS counter, and save layouts automatically across sessions.
-  - Built-in real-time color-coded **FPS counter** pill on the top HUD bar.
-  - Supports physical Bluetooth / MFi / Xbox / PlayStation controllers via SDL3.
+- **Pre-Launch Game Setup & File Integrity Screen (`ios-app/ViewController.mm`)**
+  - Verifies your Xbox `default.xbe` and game asset folders (`Detected` / `Not Detected` live status with Re-Scan) before launching the game.
+  - Configurable **Resolution Scale** (`1.0x` / `1.5x` / `2.0x`), **Anisotropic 8x Texture Filtering**, **Frame Rate Cap** (`60` / `30 FPS`), **Speed Motion Blur**, **In-Game Minimap Position**, **Steering Controls**, **FPS Counter**, and **Audio** settings — all persisted automatically.
+- **Native Mobile Racing Touch Controls, Glossy Icon Kit & In-Game HUD/Minimap Editor (`sdk/runtime/app/ios_touch_controls.mm`)**
+  - Custom glossy translucent button icons (pedals, analog stick, camera, pause, next track, nitro, handbrake, headlights, and menu controls) with auto-switching **Driving** and **Menu / Garage** modes.
+  - **In-game HUD & Minimap Editor (`⚙`)**: drag any touch control **and the in-game Xbox minimap** anywhere on screen, resize individual buttons or global scale, adjust HUD opacity, toggle minimap/FPS visibility, and save layouts across sessions.
+  - Built-in real-time color-coded **FPS counter** pill and Bluetooth / MFi / Xbox / PlayStation controller support.
 - **128 MB Guest Memory Mode & Offline XNet Stubs**
   - Allocates a 128 MB guest memory space (expanding the MC3 heap from 47 MB to 111 MB) to prevent out-of-memory crashes when entering the Garage and open-world city.
   - Offline Xbox Live / XNet stubs so the game runs cleanly without Xbox Live services.

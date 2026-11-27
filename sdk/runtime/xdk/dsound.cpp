@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "audio/audio.h"
+#include "core/hitch_prof.h"
 #include "xbe/xbe.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
@@ -845,6 +846,7 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     return 0;
 }
 HLE_STDCALL(DirectSoundDoWork, 0) {
+    const uint64_t t0 = hitch::NowUs();
     Count("DoWork");
     g_pumped = NowMs();
     std::vector<Done> done;
@@ -854,6 +856,7 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
         g_done.clear();
     }
     Run(ctx, done);
+    hitch::AddDSound(hitch::NowUs() - t0);
     return 0;
 }
 // starts together every voice played or unpaused with the synch playback flag
@@ -1172,6 +1175,7 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
 #define STREAM(name, nargs)                                     \
     static uint32_t str_##name(Voice& v, const Args& a);        \
     HLE_STDCALL(CDirectSoundStream_##name, nargs) {             \
+        const uint64_t t0 = hitch::NowUs();                     \
         Count("Stream_" #name);                                 \
         t_caller = R32(ctx.esp);                                \
         uint32_t r;                                             \
@@ -1184,6 +1188,7 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
             flushed.swap(t_flushed);                            \
         }                                                       \
         Run(ctx, flushed);                                      \
+        hitch::AddDSound(hitch::NowUs() - t0);                  \
         return r;                                               \
     }                                                           \
     static uint32_t str_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
@@ -1333,6 +1338,7 @@ STREAM(SetFilter, 2) { return 0; }
 // C-API wrapper thunk (0xB0080): routes to the same stream flush handler instead of running
 // original XDK code against our host stream object (which otherwise left garage music looping).
 HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
+    const uint64_t t0 = hitch::NowUs();
     Count("IDirectSoundStream_FlushEx");
     t_caller = R32(ctx.esp);
     uint32_t r;
@@ -1351,6 +1357,7 @@ HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
         flushed.swap(t_flushed);
     }
     Run(ctx, flushed);
+    hitch::AddDSound(hitch::NowUs() - t0);
     return r;
 }
 // the library's own writes voice registers a host stream does not have; envelopes are not played

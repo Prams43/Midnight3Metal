@@ -2,7 +2,11 @@
 // The full implementations live in the game binary (app/, etc).
 // These stubs satisfy the linker for input.cpp, which calls app::kGame.pad / rumble.
 #include "app/app.h"
+#include "gpu/metal.h"
 #include "gpu/render_profile.h"
+
+#include <chrono>
+#include <thread>
 
 namespace xnet {
 void CloseSockets() {}
@@ -52,7 +56,17 @@ Settings& Get() {
 }
 
 bool Widescreen() { return true; }
-void Pace() {}
+void Pace() {
+    const uint32_t cap = gpu::GetTargetFps();
+    if (cap > 0 && cap < 60) {
+        using clock = std::chrono::steady_clock;
+        static auto next = clock::now();
+        const auto period = std::chrono::microseconds(1000000u / cap);
+        const auto now = clock::now();
+        next = std::max(next + period, now);
+        std::this_thread::sleep_until(next);
+    }
+}
 void SplashFirstFrame() {}
 bool HandingOver() { return false; }
 void FinishHandover() {}

@@ -19,20 +19,22 @@ using input::VirtualControl;
 
 enum class ButtonStyle : uint8_t {
     Neutral = 0,
-    Gas,      // emerald racing throttle pedal
-    Brake,    // crimson brake/reverse pedal
-    Nitro,    // electric cyan boost button
-    Drift,    // amber handbrake button
-    Special,  // violet special ability button
-    TopPill,  // subtle top bar utility pill
-    Confirm,  // emerald menu confirm
-    Cancel,   // crimson menu back
+    Gas,
+    Brake,
+    Nitro,
+    Drift,
+    Special,
+    TopPill,
+    Confirm,
+    Cancel,
 };
 
 struct ControlSpec {
     const char* key;
     VirtualControl control;
     const char* title;
+    const char* icon;
+    const char* editorName;
     CGFloat x;
     CGFloat y;
     CGFloat width;
@@ -41,67 +43,65 @@ struct ControlSpec {
     ButtonStyle style;
 };
 
-// Native mobile racing HUD (shown automatically during active driving / racing):
-// - Bottom-left: sleek analog steering pad (toggleable to left/right steer pedals)
-// - Bottom-right: tall GAS pedal (R-Trigger), BRAKE pedal (L-Trigger),
-//   NOS turbo (X), DRIFT handbrake (A), SPEC special (L3), 2W weight/skip (B)
-// - Top-left/center utility strip: Pause, Map, Camera, Rear View, Flash/Challenge, Next Song
-//   (Top-right is kept completely clear for the race timer & POS HUD.)
+// Native mobile racing HUD using glossy frosted-silver icons:
+// - Bottom-left: glossy analog steering stick (toggleable to left/right steer arrows)
+// - Bottom-right: tall GAS pedal, wide BRAKE pedal, NOS flame, DRIFT handbrake, SPEC bolt, 2W balance
+// - Top utility strip: Pause, Map, Camera, Rear View, Headlight Flash, Next Track
 constexpr std::array<ControlSpec, 12> kDrivingControls{{
-    // Primary racing pedals & actions (bottom-right)
-    {"drv_gas",   VirtualControl::TriggerR,  "GAS",   0.928, 0.785, 68, 114, 18, ButtonStyle::Gas},
-    {"drv_brake", VirtualControl::TriggerL,  "BRAKE", 0.816, 0.835, 70,  80, 16, ButtonStyle::Brake},
-    {"drv_nos",   VirtualControl::FaceX,     "NOS",   0.822, 0.585, 60,  60,  0, ButtonStyle::Nitro},
-    {"drv_drift", VirtualControl::FaceA,     "DRIFT", 0.928, 0.525, 62,  54, 16, ButtonStyle::Drift},
-    {"drv_spec",  VirtualControl::ThumbL,    "SPEC",  0.716, 0.695, 56,  42, 14, ButtonStyle::Special},
-    {"drv_2w",    VirtualControl::FaceB,     "2W",    0.716, 0.865, 54,  42, 14, ButtonStyle::Neutral},
-    // Minimal top utility pills (clear of top-right timer/POS)
-    {"drv_pause", VirtualControl::Start,     "⏸",     0.048, 0.095, 42,  34, 12, ButtonStyle::TopPill},
-    {"drv_map",   VirtualControl::MenuBack,  "MAP",   0.114, 0.095, 48,  34, 12, ButtonStyle::TopPill},
-    {"drv_cam",   VirtualControl::ShoulderR, "CAM",   0.184, 0.095, 48,  34, 12, ButtonStyle::TopPill},
-    {"drv_rear",  VirtualControl::FaceY,     "REAR",  0.256, 0.095, 52,  34, 12, ButtonStyle::TopPill},
-    {"drv_flash", VirtualControl::ShoulderL, "FLASH", 0.334, 0.095, 56,  34, 12, ButtonStyle::TopPill},
-    {"drv_song",  VirtualControl::DpadRight, "♫",     0.406, 0.095, 40,  34, 12, ButtonStyle::TopPill},
+    {"drv_gas",   VirtualControl::TriggerR,  "GAS",   "hud_gas",       "GAS PEDAL",  0.930, 0.775, 68, 114, 18, ButtonStyle::Gas},
+    {"drv_brake", VirtualControl::TriggerL,  "BRAKE", "hud_brake",     "BRAKE PEDAL",0.822, 0.825, 68,  86, 16, ButtonStyle::Brake},
+    {"drv_nos",   VirtualControl::FaceX,     "NOS",   "hud_nos",       "NITRO",      0.822, 0.585, 60,  60,  0, ButtonStyle::Nitro},
+    {"drv_drift", VirtualControl::FaceA,     "DRIFT", "hud_drift",     "HANDBRAKE",  0.930, 0.515, 60,  54, 14, ButtonStyle::Drift},
+    {"drv_spec",  VirtualControl::ThumbL,    "SPEC",  "hud_spec",      "SPECIAL",    0.722, 0.695, 54,  45, 12, ButtonStyle::Special},
+    {"drv_2w",    VirtualControl::FaceB,     "2W",    "hud_2w",        "2-WHEEL",    0.722, 0.860, 54,  45, 12, ButtonStyle::Neutral},
+    {"drv_pause", VirtualControl::Start,     "PAUSE", "hud_pause",     "PAUSE",      0.046, 0.095, 40,  40, 10, ButtonStyle::TopPill},
+    {"drv_map",   VirtualControl::MenuBack,  "MAP",   "hud_map",       "MAP",        0.108, 0.095, 44,  38, 10, ButtonStyle::TopPill},
+    {"drv_cam",   VirtualControl::ShoulderR, "CAM",   "hud_camera",    "CAMERA",     0.172, 0.095, 40,  40, 10, ButtonStyle::TopPill},
+    {"drv_rear",  VirtualControl::FaceY,     "REAR",  "hud_rear",      "REAR VIEW",  0.236, 0.095, 44,  38, 10, ButtonStyle::TopPill},
+    {"drv_flash", VirtualControl::ShoulderL, "FLASH", "hud_flash",     "HIGH BEAM",  0.302, 0.095, 44,  38, 10, ButtonStyle::TopPill},
+    {"drv_song",  VirtualControl::DpadRight, "NEXT",  "hud_next_song", "NEXT TRACK", 0.366, 0.095, 40,  40, 10, ButtonStyle::TopPill},
 }};
 
 // Optional digital steering pedals (when toggled from analog stick)
 constexpr std::array<ControlSpec, 2> kSteerArrowControls{{
-    {"drv_left",  VirtualControl::SteerLeft,  "◀", 0.075, 0.775, 76, 72, 18, ButtonStyle::Neutral},
-    {"drv_right", VirtualControl::SteerRight, "▶", 0.195, 0.775, 76, 72, 18, ButtonStyle::Neutral},
+    {"drv_left",  VirtualControl::SteerLeft,  "LEFT",  "hud_left",  "STEER LEFT",  0.075, 0.775, 72, 72, 16, ButtonStyle::Neutral},
+    {"drv_right", VirtualControl::SteerRight, "RIGHT", "hud_right", "STEER RIGHT", 0.192, 0.775, 72, 72, 16, ButtonStyle::Neutral},
 }};
 
-// Clean native Menu & Garage navigation HUD (shown in Main Menu, 619 Customs Garage, Cutscenes, Pause):
+// Clean native Menu & Garage navigation HUD
 constexpr std::array<ControlSpec, 13> kMenuControls{{
-    // Navigation arrows (bottom-left)
-    {"menu_up",    VirtualControl::DpadUp,    "▲",      0.135, 0.645, 50, 48, 13, ButtonStyle::Neutral},
-    {"menu_down",  VirtualControl::DpadDown,  "▼",      0.135, 0.885, 50, 48, 13, ButtonStyle::Neutral},
-    {"menu_left",  VirtualControl::DpadLeft,  "◀",      0.068, 0.765, 50, 48, 13, ButtonStyle::Neutral},
-    {"menu_right", VirtualControl::DpadRight, "▶",      0.202, 0.765, 50, 48, 13, ButtonStyle::Neutral},
-    // Primary menu actions (bottom-right)
-    {"menu_ok",    VirtualControl::Confirm,   "OK",     0.895, 0.855, 96, 52, 16, ButtonStyle::Confirm},
-    {"menu_back",  VirtualControl::FaceB,     "BACK",   0.895, 0.695, 96, 46, 15, ButtonStyle::Cancel},
-    {"menu_opts",  VirtualControl::FaceX,     "OPTS",   0.762, 0.855, 68, 44, 14, ButtonStyle::Neutral},
-    {"menu_view",  VirtualControl::FaceY,     "VIEW",   0.762, 0.700, 68, 44, 14, ButtonStyle::Neutral},
-    // Top bar (Garage tabs, camera zoom, Start)
-    {"menu_tabl",  VirtualControl::ShoulderL, "◀ TAB",  0.072, 0.095, 60, 34, 12, ButtonStyle::TopPill},
-    {"menu_tabr",  VirtualControl::ShoulderR, "TAB ▶",  0.158, 0.095, 60, 34, 12, ButtonStyle::TopPill},
-    {"menu_zmin",  VirtualControl::TriggerL,  "ZOOM-",  0.248, 0.095, 62, 34, 12, ButtonStyle::TopPill},
-    {"menu_zmout", VirtualControl::TriggerR,  "ZOOM+",  0.340, 0.095, 62, 34, 12, ButtonStyle::TopPill},
-    {"menu_start", VirtualControl::Start,     "START",  0.440, 0.095, 62, 34, 12, ButtonStyle::TopPill},
+    {"menu_up",    VirtualControl::DpadUp,    "UP",    "hud_up",       "UP",        0.135, 0.640, 50, 50, 12, ButtonStyle::Neutral},
+    {"menu_down",  VirtualControl::DpadDown,  "DOWN",  "hud_down",     "DOWN",      0.135, 0.885, 50, 50, 12, ButtonStyle::Neutral},
+    {"menu_left",  VirtualControl::DpadLeft,  "LEFT",  "hud_left",     "LEFT",      0.068, 0.762, 50, 50, 12, ButtonStyle::Neutral},
+    {"menu_right", VirtualControl::DpadRight, "RIGHT", "hud_right",    "RIGHT",     0.202, 0.762, 50, 50, 12, ButtonStyle::Neutral},
+    {"menu_ok",    VirtualControl::Confirm,   "OK",    "hud_ok",       "CONFIRM",   0.895, 0.855, 84, 54, 14, ButtonStyle::Confirm},
+    {"menu_back",  VirtualControl::FaceB,     "BACK",  "hud_back",     "BACK",      0.895, 0.695, 84, 50, 14, ButtonStyle::Cancel},
+    {"menu_opts",  VirtualControl::FaceX,     "OPTS",  "hud_opts",     "OPTIONS",   0.765, 0.855, 56, 46, 12, ButtonStyle::Neutral},
+    {"menu_view",  VirtualControl::FaceY,     "VIEW",  "hud_view",     "VIEW",      0.765, 0.700, 56, 46, 12, ButtonStyle::Neutral},
+    {"menu_tabl",  VirtualControl::ShoulderL, "TAB-",  "hud_tab_l",    "PREV TAB",  0.066, 0.095, 48, 40, 10, ButtonStyle::TopPill},
+    {"menu_tabr",  VirtualControl::ShoulderR, "TAB+",  "hud_tab_r",    "NEXT TAB",  0.136, 0.095, 48, 40, 10, ButtonStyle::TopPill},
+    {"menu_zmin",  VirtualControl::TriggerL,  "ZOOM-", "hud_zoom_out", "ZOOM OUT",  0.210, 0.095, 48, 40, 10, ButtonStyle::TopPill},
+    {"menu_zmout", VirtualControl::TriggerR,  "ZOOM+", "hud_zoom_in",  "ZOOM IN",   0.282, 0.095, 48, 40, 10, ButtonStyle::TopPill},
+    {"menu_start", VirtualControl::Start,     "START", "hud_drive",    "START",     0.354, 0.095, 48, 40, 10, ButtonStyle::TopPill},
 }};
 
 constexpr CGFloat kStickX = 0.120;
 constexpr CGFloat kStickY = 0.745;
 constexpr CGFloat kStickDiameter = 122.0;
-constexpr CGFloat kKnobRatio = 46.0 / 122.0;
+constexpr CGFloat kKnobRatio = 52.0 / 122.0;
 constexpr CGFloat kStickDeadzone = 0.05;
 
-constexpr CGFloat kSteerToggleX = 0.468;
-constexpr CGFloat kModeToggleDrivingX = 0.538;
-constexpr CGFloat kModeToggleMenuX = 0.532;
-constexpr CGFloat kHudGearX = 0.606;
-constexpr CGFloat kFpsPillX = 0.684;
+constexpr CGFloat kSteerToggleX = 0.432;
+constexpr CGFloat kModeToggleDrivingX = 0.498;
+constexpr CGFloat kModeToggleMenuX = 0.432;
+constexpr CGFloat kHudGearX = 0.562;
+constexpr CGFloat kFpsPillX = 0.642;
 constexpr CGFloat kTopBarY = 0.095;
+
+constexpr CGFloat kDefaultMinimapX = 0.140;
+constexpr CGFloat kDefaultMinimapY = 0.780;
+constexpr CGFloat kMinimapBoxW = 104.0;
+constexpr CGFloat kMinimapBoxH = 104.0;
 
 constexpr CGFloat kMinItemScale = 0.60;
 constexpr CGFloat kMaxItemScale = 1.60;
@@ -112,18 +112,26 @@ constexpr CGFloat kMaxOpacity = 1.00;
 
 NSString* const kHudPrefsKey = @"MC3TouchHudConfig_v1";
 
+UIImage* LoadHudIcon(const char* name) {
+    if (!name || !*name) return nil;
+    NSString* ns = [NSString stringWithUTF8String:name];
+    NSString* path = [[NSBundle mainBundle] pathForResource:ns ofType:@"png"];
+    if (!path) return nil;
+    return [UIImage imageWithContentsOfFile:path];
+}
+
 CGFloat BaseFontSizeForStyle(ButtonStyle style) {
     switch (style) {
-    case ButtonStyle::Gas:     return 16.0;
-    case ButtonStyle::Confirm: return 15.0;
+    case ButtonStyle::Gas:     return 14.0;
+    case ButtonStyle::Confirm: return 13.5;
     case ButtonStyle::Nitro:
-    case ButtonStyle::Cancel:  return 14.0;
-    case ButtonStyle::Brake:   return 13.5;
-    case ButtonStyle::Drift:   return 13.0;
-    case ButtonStyle::Special: return 12.0;
-    case ButtonStyle::TopPill: return 11.5;
+    case ButtonStyle::Cancel:  return 13.0;
+    case ButtonStyle::Brake:   return 12.5;
+    case ButtonStyle::Drift:   return 12.0;
+    case ButtonStyle::Special: return 11.5;
+    case ButtonStyle::TopPill: return 10.5;
     case ButtonStyle::Neutral:
-    default:                   return 13.0;
+    default:                   return 12.0;
     }
 }
 
@@ -142,60 +150,34 @@ UIColor* BorderColorForStyle(ButtonStyle style) {
     }
 }
 
-void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloat height, CGFloat radius) {
-    UIColor* bg = [UIColor colorWithRed:0.06 green:0.08 blue:0.11 alpha:0.46];
-    UIColor* border = BorderColorForStyle(style);
-    UIColor* titleColor = UIColor.whiteColor;
-    const CGFloat fontSize = BaseFontSizeForStyle(style);
-
-    switch (style) {
-    case ButtonStyle::Gas:
-        bg = [UIColor colorWithRed:0.05 green:0.32 blue:0.20 alpha:0.54];
-        titleColor = [UIColor colorWithRed:0.85 green:1.0 blue:0.92 alpha:1.0];
-        break;
-    case ButtonStyle::Brake:
-        bg = [UIColor colorWithRed:0.36 green:0.07 blue:0.10 alpha:0.54];
-        titleColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.88 alpha:1.0];
-        break;
-    case ButtonStyle::Nitro:
-        bg = [UIColor colorWithRed:0.04 green:0.22 blue:0.38 alpha:0.56];
-        titleColor = [UIColor colorWithRed:0.85 green:0.96 blue:1.0 alpha:1.0];
-        break;
-    case ButtonStyle::Drift:
-        bg = [UIColor colorWithRed:0.36 green:0.22 blue:0.04 alpha:0.54];
-        titleColor = [UIColor colorWithRed:1.0 green:0.94 blue:0.80 alpha:1.0];
-        break;
-    case ButtonStyle::Special:
-        bg = [UIColor colorWithRed:0.22 green:0.10 blue:0.36 alpha:0.52];
-        titleColor = [UIColor colorWithRed:0.94 green:0.88 blue:1.0 alpha:1.0];
-        break;
-    case ButtonStyle::Confirm:
-        bg = [UIColor colorWithRed:0.06 green:0.34 blue:0.22 alpha:0.60];
-        break;
-    case ButtonStyle::Cancel:
-        bg = [UIColor colorWithRed:0.36 green:0.09 blue:0.12 alpha:0.58];
-        break;
-    case ButtonStyle::TopPill:
-        bg = [UIColor colorWithRed:0.05 green:0.07 blue:0.10 alpha:0.44];
-        break;
-    case ButtonStyle::Neutral:
-    default:
-        break;
+BOOL ApplyButtonVisuals(UIButton* button, const char* iconName, NSString* fallbackTitle,
+                        ButtonStyle style, CGFloat width, CGFloat height, CGFloat radius) {
+    UIImage* iconImg = LoadHudIcon(iconName);
+    button.exclusiveTouch = NO;
+    button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    if (iconImg) {
+        [button setBackgroundImage:iconImg forState:UIControlStateNormal];
+        [button setTitle:@"" forState:UIControlStateNormal];
+        button.backgroundColor = UIColor.clearColor;
+        button.layer.cornerRadius = (radius > 0.0) ? radius : (MIN(width, height) * 0.5);
+        button.layer.borderWidth = 0.0;
+        button.layer.borderColor = UIColor.clearColor.CGColor;
+        button.layer.shadowOpacity = 0.0f;
+        return YES;
     }
 
+    // Fallback glass style if running outside app bundle (e.g. unit compile check)
+    UIColor* bg = [UIColor colorWithRed:0.06 green:0.08 blue:0.11 alpha:0.50];
     button.backgroundColor = bg;
-    button.titleLabel.font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightHeavy];
+    [button setTitle:fallbackTitle forState:UIControlStateNormal];
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:BaseFontSizeForStyle(style) weight:UIFontWeightHeavy];
     button.titleLabel.adjustsFontSizeToFitWidth = YES;
     button.titleLabel.minimumScaleFactor = 0.65;
-    [button setTitleColor:titleColor forState:UIControlStateNormal];
     button.layer.cornerRadius = (radius > 0.0) ? radius : (MIN(width, height) * 0.5);
     button.layer.borderWidth = (style == ButtonStyle::TopPill) ? 1.0 : 1.5;
-    button.layer.borderColor = border.CGColor;
-    button.layer.shadowColor = UIColor.blackColor.CGColor;
-    button.layer.shadowOpacity = 0.45f;
-    button.layer.shadowOffset = CGSizeMake(0, 2);
-    button.layer.shadowRadius = 4.0;
-    button.exclusiveTouch = NO;
+    button.layer.borderColor = BorderColorForStyle(style).CGColor;
+    return NO;
 }
 
 }  // namespace
@@ -213,11 +195,13 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 @property (nonatomic, assign) CGFloat baseH;
 @property (nonatomic, assign) CGFloat baseRadius;
 @property (nonatomic, assign) ButtonStyle style;
+@property (nonatomic, assign) BOOL hasIcon;
 @property (nonatomic, assign) BOOL isDriving;
 @property (nonatomic, assign) BOOL isMenu;
 @property (nonatomic, assign) BOOL isGlobal;
 @property (nonatomic, assign) BOOL isButton;
 @property (nonatomic, assign) BOOL isFps;
+@property (nonatomic, assign) BOOL isMinimap;
 @end
 
 @implementation MC3HudItem
@@ -228,46 +212,48 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 @end
 
 @implementation MC3AnalogStickView {
-    UIView* _knobView;
-    UILabel* _leftHint;
-    UILabel* _rightHint;
+    UIImageView* _ringImageView;
+    UIImageView* _knobImageView;
     UITouch* _activeTouch;
+    BOOL _hasImages;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
-    self.backgroundColor = [UIColor colorWithRed:0.05 green:0.07 blue:0.10 alpha:0.30];
+    self.backgroundColor = UIColor.clearColor;
     self.opaque = NO;
     self.multipleTouchEnabled = NO;
     self.exclusiveTouch = NO;
     self.userInteractionEnabled = YES;
-    self.layer.cornerRadius = frame.size.width * 0.5;
-    self.layer.borderWidth = 1.5;
-    self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.45].CGColor;
 
-    _leftHint = [[UILabel alloc] initWithFrame:CGRectZero];
-    _leftHint.text = @"‹";
-    _leftHint.textColor = [UIColor colorWithWhite:1.0 alpha:0.45];
-    _leftHint.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
-    _leftHint.textAlignment = NSTextAlignmentCenter;
-    _leftHint.userInteractionEnabled = NO;
-    [self addSubview:_leftHint];
+    UIImage* ringImg = LoadHudIcon("hud_stick_ring");
+    UIImage* knobImg = LoadHudIcon("hud_stick_knob");
+    _hasImages = (ringImg != nil && knobImg != nil);
 
-    _rightHint = [[UILabel alloc] initWithFrame:CGRectZero];
-    _rightHint.text = @"›";
-    _rightHint.textColor = [UIColor colorWithWhite:1.0 alpha:0.45];
-    _rightHint.font = [UIFont systemFontOfSize:18 weight:UIFontWeightBold];
-    _rightHint.textAlignment = NSTextAlignmentCenter;
-    _rightHint.userInteractionEnabled = NO;
-    [self addSubview:_rightHint];
+    _ringImageView = [[UIImageView alloc] initWithFrame:self.bounds];
+    _ringImageView.contentMode = UIViewContentModeScaleAspectFit;
+    _ringImageView.userInteractionEnabled = NO;
+    if (_hasImages) {
+        _ringImageView.image = ringImg;
+    } else {
+        self.backgroundColor = [UIColor colorWithRed:0.05 green:0.07 blue:0.10 alpha:0.32];
+        self.layer.borderWidth = 1.5;
+        self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.45].CGColor;
+    }
+    [self addSubview:_ringImageView];
 
-    _knobView = [[UIView alloc] initWithFrame:CGRectZero];
-    _knobView.backgroundColor = [UIColor colorWithRed:0.20 green:0.75 blue:1.0 alpha:0.40];
-    _knobView.layer.borderWidth = 1.5;
-    _knobView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
-    _knobView.userInteractionEnabled = NO;
-    [self addSubview:_knobView];
+    _knobImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
+    _knobImageView.contentMode = UIViewContentModeScaleAspectFit;
+    _knobImageView.userInteractionEnabled = NO;
+    if (_hasImages) {
+        _knobImageView.image = knobImg;
+    } else {
+        _knobImageView.backgroundColor = [UIColor colorWithRed:0.85 green:0.90 blue:0.95 alpha:0.75];
+        _knobImageView.layer.borderWidth = 1.5;
+        _knobImageView.layer.borderColor = UIColor.whiteColor.CGColor;
+    }
+    [self addSubview:_knobImageView];
     [self layoutSubviews];
     return self;
 }
@@ -275,21 +261,20 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 - (void)layoutSubviews {
     [super layoutSubviews];
     const CGFloat d = MIN(self.bounds.size.width, self.bounds.size.height);
-    const CGFloat knobD = MAX(24.0, d * kKnobRatio);
+    const CGFloat knobD = MAX(28.0, d * kKnobRatio);
     self.layer.cornerRadius = d * 0.5;
-    _leftHint.frame = CGRectMake(6, self.bounds.size.height * 0.5 - 10, 16, 20);
-    _rightHint.frame = CGRectMake(self.bounds.size.width - 22, self.bounds.size.height * 0.5 - 10, 16, 20);
-    _knobView.bounds = CGRectMake(0, 0, knobD, knobD);
-    _knobView.layer.cornerRadius = knobD * 0.5;
+    _ringImageView.frame = self.bounds;
+    _knobImageView.bounds = CGRectMake(0, 0, knobD, knobD);
+    if (!_hasImages) _knobImageView.layer.cornerRadius = knobD * 0.5;
     if (!_activeTouch) {
-        _knobView.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+        _knobImageView.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
     }
 }
 
 - (void)updateWithPoint:(CGPoint)pt {
     const CGPoint center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
     const CGFloat d = MIN(self.bounds.size.width, self.bounds.size.height);
-    const CGFloat knobD = MAX(24.0, d * kKnobRatio);
+    const CGFloat knobD = MAX(28.0, d * kKnobRatio);
     const CGFloat maxRadius = MAX(1.0, (d - knobD) * 0.5);
     CGFloat dx = pt.x - center.x;
     CGFloat dy = pt.y - center.y;
@@ -299,10 +284,10 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         dx *= scale;
         dy *= scale;
     }
-    _knobView.center = CGPointMake(center.x + dx, center.y + dy);
+    _knobImageView.center = CGPointMake(center.x + dx, center.y + dy);
 
     CGFloat nx = dx / maxRadius;
-    CGFloat ny = -dy / maxRadius;  // UIKit +y is down; Xbox +ly is up
+    CGFloat ny = -dy / maxRadius;
     if (std::fabs(nx) < kStickDeadzone) nx = 0.0;
     if (std::fabs(ny) < kStickDeadzone) ny = 0.0;
     input::SetVirtualLeftStick(static_cast<float>(nx), static_cast<float>(ny));
@@ -310,8 +295,8 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 
 - (void)resetStick {
     _activeTouch = nil;
-    _knobView.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
-    _knobView.alpha = 1.0;
+    _knobImageView.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+    _knobImageView.alpha = 1.0;
     input::SetVirtualLeftStick(0.0f, 0.0f);
 }
 
@@ -320,7 +305,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     if (!_activeTouch) {
         _activeTouch = [touches anyObject];
         if (_activeTouch) {
-            _knobView.alpha = 0.85;
+            _knobImageView.alpha = 0.88;
             [self updateWithPoint:[_activeTouch locationInView:self]];
         }
     }
@@ -421,9 +406,10 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     UIButton* _toDrivingButton;
     UIButton* _hudEditButton;
     UILabel* _fpsLabel;
+    UILabel* _minimapPreviewLabel;
 
-    // Editable HUD items & customization state
     NSMutableArray<MC3HudItem*>* _items;
+    MC3HudItem* _minimapItem;
     MC3HudItem* _selectedItem;
     MC3HudItem* _draggingItem;
     CGPoint _dragOffset;
@@ -431,13 +417,16 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     CGFloat _globalScale;
     CGFloat _hudOpacity;
     BOOL _showFps;
+    BOOL _showMinimap;
+    BOOL _minimapCustom;
 
-    // Floating in-game HUD editor UI
+    // Floating in-game HUD & Minimap editor UI (English)
     MC3HudEditOverlayView* _editOverlay;
     UIView* _editorPanel;
     UILabel* _editorTargetLabel;
     UIButton* _editorModeBtn;
     UIButton* _editorSteerBtn;
+    UIButton* _editorMapBtn;
     UIButton* _editorFpsBtn;
     UIButton* _editorAllBtn;
     UISlider* _sizeSlider;
@@ -454,13 +443,13 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     BOOL _useArrowSteering;
 }
 
-- (UIButton*)makeButtonForSpec:(const ControlSpec&)spec tag:(NSInteger)tag {
+- (UIButton*)makeButtonForSpec:(const ControlSpec&)spec tag:(NSInteger)tag outHasIcon:(BOOL*)outHasIcon {
     UIButton* button = [UIButton buttonWithType:UIButtonTypeCustom];
     button.tag = tag;
     NSString* title = [NSString stringWithUTF8String:spec.title];
-    button.accessibilityLabel = title;
-    [button setTitle:title forState:UIControlStateNormal];
-    ApplyButtonStyle(button, spec.style, spec.width, spec.height, spec.radius);
+    button.accessibilityLabel = [NSString stringWithUTF8String:spec.editorName];
+    const BOOL hasIcon = ApplyButtonVisuals(button, spec.icon, title, spec.style, spec.width, spec.height, spec.radius);
+    if (outHasIcon) *outHasIcon = hasIcon;
     button.frame = CGRectMake(0, 0, spec.width, spec.height);
     button.autoresizingMask = UIViewAutoresizingNone;
     [button addTarget:self action:@selector(controlDown:) forControlEvents:UIControlEventTouchDown];
@@ -470,11 +459,12 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     return button;
 }
 
-- (UIButton*)makeUtilityButtonWithTitle:(NSString*)title width:(CGFloat)w height:(CGFloat)h action:(SEL)action {
+- (UIButton*)makeUtilityButtonWithTitle:(NSString*)title icon:(const char*)iconName
+                                  width:(CGFloat)w height:(CGFloat)h action:(SEL)action outHasIcon:(BOOL*)outHasIcon {
     UIButton* button = [UIButton buttonWithType:UIButtonTypeCustom];
     button.accessibilityLabel = title;
-    [button setTitle:title forState:UIControlStateNormal];
-    ApplyButtonStyle(button, ButtonStyle::TopPill, w, h, 12.0);
+    const BOOL hasIcon = ApplyButtonVisuals(button, iconName, title, ButtonStyle::TopPill, w, h, 10.0);
+    if (outHasIcon) *outHasIcon = hasIcon;
     button.frame = CGRectMake(0, 0, w, h);
     button.autoresizingMask = UIViewAutoresizingNone;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
@@ -485,9 +475,9 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     UIButton* btn = [UIButton buttonWithType:UIButtonTypeCustom];
     [btn setTitle:title forState:UIControlStateNormal];
     [btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    btn.titleLabel.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightBold];
     btn.titleLabel.adjustsFontSizeToFitWidth = YES;
-    btn.titleLabel.minimumScaleFactor = 0.75;
+    btn.titleLabel.minimumScaleFactor = 0.72;
     btn.backgroundColor = bg;
     btn.layer.cornerRadius = 8.0;
     btn.layer.borderWidth = 1.0;
@@ -505,11 +495,13 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
                          baseH:(CGFloat)h
                     baseRadius:(CGFloat)radius
                          style:(ButtonStyle)style
+                       hasIcon:(BOOL)hasIcon
                      isDriving:(BOOL)isDriving
                         isMenu:(BOOL)isMenu
                       isGlobal:(BOOL)isGlobal
                       isButton:(BOOL)isButton
-                         isFps:(BOOL)isFps {
+                         isFps:(BOOL)isFps
+                     isMinimap:(BOOL)isMinimap {
     MC3HudItem* item = [[MC3HudItem alloc] init];
     item.key = key;
     item.displayName = name;
@@ -523,26 +515,28 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     item.baseH = h;
     item.baseRadius = radius;
     item.style = style;
+    item.hasIcon = hasIcon;
     item.isDriving = isDriving;
     item.isMenu = isMenu;
     item.isGlobal = isGlobal;
     item.isButton = isButton;
     item.isFps = isFps;
+    item.isMinimap = isMinimap;
     [_items addObject:item];
     return item;
 }
 
 - (void)buildEditorUi {
     _editOverlay = [[MC3HudEditOverlayView alloc] initWithFrame:self.bounds];
-    _editOverlay.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.08 alpha:0.28];
+    _editOverlay.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.08 alpha:0.30];
     _editOverlay.hidden = YES;
     _editOverlay.userInteractionEnabled = NO;
     _editOverlay.delegate = self;
     _editOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self addSubview:_editOverlay];
 
-    _editorPanel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 490, 96)];
-    _editorPanel.backgroundColor = [UIColor colorWithRed:0.06 green:0.08 blue:0.12 alpha:0.92];
+    _editorPanel = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 540, 94)];
+    _editorPanel.backgroundColor = [UIColor colorWithRed:0.06 green:0.08 blue:0.12 alpha:0.93];
     _editorPanel.layer.cornerRadius = 14.0;
     _editorPanel.layer.borderWidth = 1.2;
     _editorPanel.layer.borderColor = [UIColor colorWithRed:0.25 green:0.80 blue:1.0 alpha:0.75].CGColor;
@@ -554,11 +548,11 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     [self addSubview:_editorPanel];
 
     _editorTargetLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    _editorTargetLabel.text = @"HUD: ALL";
+    _editorTargetLabel.text = @"ALL CONTROLS";
     _editorTargetLabel.textColor = [UIColor colorWithRed:0.55 green:0.92 blue:1.0 alpha:1.0];
-    _editorTargetLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightHeavy];
+    _editorTargetLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightHeavy];
     _editorTargetLabel.adjustsFontSizeToFitWidth = YES;
-    _editorTargetLabel.minimumScaleFactor = 0.75;
+    _editorTargetLabel.minimumScaleFactor = 0.72;
     [_editorPanel addSubview:_editorTargetLabel];
 
     UIColor* neutralBg = [UIColor colorWithWhite:1.0 alpha:0.12];
@@ -566,6 +560,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 
     _editorModeBtn = [self makeEditorPillWithTitle:@"DRIVE" bg:neutralBg border:neutralBorder action:@selector(editorToggleMode:)];
     _editorSteerBtn = [self makeEditorPillWithTitle:@"STICK" bg:neutralBg border:neutralBorder action:@selector(editorToggleSteer:)];
+    _editorMapBtn = [self makeEditorPillWithTitle:@"MAP:ON" bg:neutralBg border:neutralBorder action:@selector(editorToggleMinimap:)];
     _editorFpsBtn = [self makeEditorPillWithTitle:@"FPS:ON" bg:neutralBg border:neutralBorder action:@selector(editorToggleFps:)];
     UIButton* resetBtn = [self makeEditorPillWithTitle:@"RESET"
                                                     bg:[UIColor colorWithRed:0.45 green:0.12 blue:0.14 alpha:0.75]
@@ -579,6 +574,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     resetBtn.tag = 998;
     [_editorPanel addSubview:_editorModeBtn];
     [_editorPanel addSubview:_editorSteerBtn];
+    [_editorPanel addSubview:_editorMapBtn];
     [_editorPanel addSubview:_editorFpsBtn];
     [_editorPanel addSubview:resetBtn];
     [_editorPanel addSubview:doneBtn];
@@ -590,7 +586,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     [_editorPanel addSubview:_editorAllBtn];
 
     _sizeValueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    _sizeValueLabel.text = @"SIZE 100%";
+    _sizeValueLabel.text = @"ALL SIZE 100%";
     _sizeValueLabel.textColor = UIColor.whiteColor;
     _sizeValueLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
     [_editorPanel addSubview:_sizeValueLabel];
@@ -604,7 +600,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     [_editorPanel addSubview:_sizeSlider];
 
     _opacityValueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    _opacityValueLabel.text = @"ALPHA 100%";
+    _opacityValueLabel.text = @"OPACITY 100%";
     _opacityValueLabel.textColor = UIColor.whiteColor;
     _opacityValueLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
     [_editorPanel addSubview:_opacityValueLabel];
@@ -620,24 +616,25 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 
 - (void)layoutEditorPanel {
     const CGRect bounds = self.bounds;
-    const CGFloat maxW = MIN(520.0, MAX(310.0, CGRectGetWidth(bounds) - 24.0));
+    const CGFloat maxW = MIN(560.0, MAX(320.0, CGRectGetWidth(bounds) - 20.0));
     const CGFloat panelH = 92.0;
     const CGFloat panelY = MAX(10.0, CGRectGetHeight(bounds) * 0.19);
     _editorPanel.frame = CGRectMake(CGRectGetMidX(bounds) - maxW * 0.5, panelY, maxW, panelH);
 
-    const CGFloat pad = 10.0;
+    const CGFloat pad = 9.0;
     const CGFloat innerW = maxW - pad * 2.0;
     const CGFloat row1Y = 9.0;
     const CGFloat row1H = 28.0;
-    const CGFloat gap = 6.0;
+    const CGFloat gap = 5.0;
 
-    const CGFloat doneW = 54.0;
-    const CGFloat resetW = 54.0;
-    const CGFloat fpsW = 58.0;
-    const CGFloat steerW = 58.0;
-    const CGFloat modeW = 56.0;
-    const CGFloat rightTotal = doneW + resetW + fpsW + steerW + modeW + gap * 4.0;
-    const CGFloat labelW = MAX(68.0, innerW - rightTotal - gap);
+    const CGFloat doneW = 48.0;
+    const CGFloat resetW = 48.0;
+    const CGFloat fpsW = 54.0;
+    const CGFloat mapW = 58.0;
+    const CGFloat steerW = 52.0;
+    const CGFloat modeW = 48.0;
+    const CGFloat rightTotal = doneW + resetW + fpsW + mapW + steerW + modeW + gap * 5.0;
+    const CGFloat labelW = MAX(60.0, innerW - rightTotal - gap);
 
     _editorTargetLabel.frame = CGRectMake(pad, row1Y, labelW, row1H);
     CGFloat rx = maxW - pad - doneW;
@@ -648,6 +645,8 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     resetBtn.frame = CGRectMake(rx, row1Y, resetW, row1H);
     rx -= gap + fpsW;
     _editorFpsBtn.frame = CGRectMake(rx, row1Y, fpsW, row1H);
+    rx -= gap + mapW;
+    _editorMapBtn.frame = CGRectMake(rx, row1Y, mapW, row1H);
     rx -= gap + steerW;
     _editorSteerBtn.frame = CGRectMake(rx, row1Y, steerW, row1H);
     rx -= gap + modeW;
@@ -685,6 +684,8 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _globalScale = 1.0;
     _hudOpacity = 1.0;
     _showFps = YES;
+    _showMinimap = YES;
+    _minimapCustom = NO;
     _editMode = NO;
 
     _drivingContainer = [[UIView alloc] initWithFrame:self.bounds];
@@ -701,77 +702,106 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _menuContainer.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self addSubview:_menuContainer];
 
-    // Driving controls: steering stick + optional steer arrows + native pedals/boost
+    // Draggable in-game Xbox Minimap preview box (visible ONLY while HUD Editor is open)
+    _minimapPreviewLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, kMinimapBoxW, kMinimapBoxH)];
+    _minimapPreviewLabel.text = @"MINIMAP\nDRAG TO MOVE";
+    _minimapPreviewLabel.numberOfLines = 2;
+    _minimapPreviewLabel.textAlignment = NSTextAlignmentCenter;
+    _minimapPreviewLabel.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightHeavy];
+    _minimapPreviewLabel.textColor = [UIColor colorWithRed:0.62 green:0.95 blue:1.0 alpha:1.0];
+    _minimapPreviewLabel.backgroundColor = [UIColor colorWithRed:0.06 green:0.24 blue:0.36 alpha:0.45];
+    _minimapPreviewLabel.layer.cornerRadius = kMinimapBoxW * 0.5;
+    _minimapPreviewLabel.layer.masksToBounds = YES;
+    _minimapPreviewLabel.layer.borderWidth = 2.0;
+    _minimapPreviewLabel.layer.borderColor = [UIColor colorWithRed:0.28 green:0.88 blue:1.0 alpha:0.9].CGColor;
+    _minimapPreviewLabel.userInteractionEnabled = NO;
+    _minimapPreviewLabel.hidden = YES;
+    [self addSubview:_minimapPreviewLabel];
+    _minimapItem = [self registerItemKey:@"hud_minimap" displayName:@"MINIMAP" view:_minimapPreviewLabel
+                                       x:kDefaultMinimapX y:kDefaultMinimapY
+                                   baseW:kMinimapBoxW baseH:kMinimapBoxH baseRadius:0.0
+                                   style:ButtonStyle::Neutral hasIcon:NO
+                               isDriving:NO isMenu:NO isGlobal:YES isButton:NO isFps:NO isMinimap:YES];
+
+    // Driving controls: glossy analog steering stick + optional steer arrows + glossy pedals/actions
     _stickView = [[MC3AnalogStickView alloc] initWithFrame:CGRectMake(0, 0, kStickDiameter, kStickDiameter)];
     _stickView.autoresizingMask = UIViewAutoresizingNone;
     [_drivingContainer addSubview:_stickView];
     [self registerItemKey:@"drv_stick" displayName:@"STEER STICK" view:_stickView
                         x:kStickX y:kStickY baseW:kStickDiameter baseH:kStickDiameter baseRadius:0.0
-                    style:ButtonStyle::Neutral isDriving:YES isMenu:NO isGlobal:NO isButton:NO isFps:NO];
+                    style:ButtonStyle::Neutral hasIcon:YES isDriving:YES isMenu:NO isGlobal:NO isButton:NO isFps:NO isMinimap:NO];
 
     for (size_t i = 0; i < kSteerArrowControls.size(); ++i) {
         const auto& spec = kSteerArrowControls[i];
-        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control)];
+        BOOL hasIcon = NO;
+        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control) outHasIcon:&hasIcon];
         btn.hidden = YES;
         [_drivingContainer addSubview:btn];
         _steerArrowButtons[i] = btn;
         [self registerItemKey:[NSString stringWithUTF8String:spec.key]
-                  displayName:(i == 0 ? @"STEER LEFT" : @"STEER RIGHT")
+                  displayName:[NSString stringWithUTF8String:spec.editorName]
                          view:btn x:spec.x y:spec.y baseW:spec.width baseH:spec.height baseRadius:spec.radius
-                        style:spec.style isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO];
+                        style:spec.style hasIcon:hasIcon isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
     }
 
     for (size_t i = 0; i < kDrivingControls.size(); ++i) {
         const auto& spec = kDrivingControls[i];
-        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control)];
+        BOOL hasIcon = NO;
+        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control) outHasIcon:&hasIcon];
         [_drivingContainer addSubview:btn];
         _drivingButtons[i] = btn;
-        NSString* disp = [NSString stringWithUTF8String:spec.title];
-        if (spec.control == VirtualControl::Start) disp = @"PAUSE";
-        else if (spec.control == VirtualControl::DpadRight) disp = @"NEXT SONG";
         [self registerItemKey:[NSString stringWithUTF8String:spec.key]
-                  displayName:disp
+                  displayName:[NSString stringWithUTF8String:spec.editorName]
                          view:btn x:spec.x y:spec.y baseW:spec.width baseH:spec.height baseRadius:spec.radius
-                        style:spec.style isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO];
+                        style:spec.style hasIcon:hasIcon isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
     }
 
-    _steerToggleButton = [self makeUtilityButtonWithTitle:@"◀▶" width:44 height:34 action:@selector(toggleSteerStyle:)];
+    BOOL steerIcon = NO;
+    _steerToggleButton = [self makeUtilityButtonWithTitle:@"STEER" icon:"hud_steer_mode" width:44 height:38
+                                                   action:@selector(toggleSteerStyle:) outHasIcon:&steerIcon];
     [_drivingContainer addSubview:_steerToggleButton];
     [self registerItemKey:@"drv_steer_tog" displayName:@"STEER MODE" view:_steerToggleButton
-                        x:kSteerToggleX y:kTopBarY baseW:44 baseH:34 baseRadius:12.0
-                    style:ButtonStyle::TopPill isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO];
+                        x:kSteerToggleX y:kTopBarY baseW:44 baseH:38 baseRadius:10.0
+                    style:ButtonStyle::TopPill hasIcon:steerIcon isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
 
-    _toMenuButton = [self makeUtilityButtonWithTitle:@"MENU" width:52 height:34 action:@selector(toggleManualMode:)];
+    BOOL menuBtnIcon = NO;
+    _toMenuButton = [self makeUtilityButtonWithTitle:@"MENU" icon:"hud_menu" width:44 height:38
+                                              action:@selector(toggleManualMode:) outHasIcon:&menuBtnIcon];
     [_drivingContainer addSubview:_toMenuButton];
-    [self registerItemKey:@"drv_menu_tog" displayName:@"MENU BTN" view:_toMenuButton
-                        x:kModeToggleDrivingX y:kTopBarY baseW:52 baseH:34 baseRadius:12.0
-                    style:ButtonStyle::TopPill isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO];
+    [self registerItemKey:@"drv_menu_tog" displayName:@"MENU MODE" view:_toMenuButton
+                        x:kModeToggleDrivingX y:kTopBarY baseW:44 baseH:38 baseRadius:10.0
+                    style:ButtonStyle::TopPill hasIcon:menuBtnIcon isDriving:YES isMenu:NO isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
 
     // Menu & Garage controls
     for (size_t i = 0; i < kMenuControls.size(); ++i) {
         const auto& spec = kMenuControls[i];
-        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control)];
+        BOOL hasIcon = NO;
+        UIButton* btn = [self makeButtonForSpec:spec tag:static_cast<NSInteger>(spec.control) outHasIcon:&hasIcon];
         [_menuContainer addSubview:btn];
         _menuButtons[i] = btn;
         [self registerItemKey:[NSString stringWithUTF8String:spec.key]
-                  displayName:[NSString stringWithUTF8String:spec.title]
+                  displayName:[NSString stringWithUTF8String:spec.editorName]
                          view:btn x:spec.x y:spec.y baseW:spec.width baseH:spec.height baseRadius:spec.radius
-                        style:spec.style isDriving:NO isMenu:YES isGlobal:NO isButton:YES isFps:NO];
+                        style:spec.style hasIcon:hasIcon isDriving:NO isMenu:YES isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
     }
 
-    _toDrivingButton = [self makeUtilityButtonWithTitle:@"DRIVE" width:56 height:34 action:@selector(toggleManualMode:)];
+    BOOL driveBtnIcon = NO;
+    _toDrivingButton = [self makeUtilityButtonWithTitle:@"DRIVE" icon:"hud_steer_mode" width:44 height:38
+                                                 action:@selector(toggleManualMode:) outHasIcon:&driveBtnIcon];
     [_menuContainer addSubview:_toDrivingButton];
-    [self registerItemKey:@"menu_drv_tog" displayName:@"DRIVE BTN" view:_toDrivingButton
-                        x:kModeToggleMenuX y:kTopBarY baseW:56 baseH:34 baseRadius:12.0
-                    style:ButtonStyle::TopPill isDriving:NO isMenu:YES isGlobal:NO isButton:YES isFps:NO];
+    [self registerItemKey:@"menu_drv_tog" displayName:@"DRIVE MODE" view:_toDrivingButton
+                        x:kModeToggleMenuX y:kTopBarY baseW:44 baseH:38 baseRadius:10.0
+                    style:ButtonStyle::TopPill hasIcon:driveBtnIcon isDriving:NO isMenu:YES isGlobal:NO isButton:YES isFps:NO isMinimap:NO];
 
-    // Persistent HUD Settings button (visible in both Driving and Menu modes)
-    _hudEditButton = [self makeUtilityButtonWithTitle:@"⚙" width:38 height:34 action:@selector(toggleEditMode:)];
-    _hudEditButton.accessibilityLabel = @"HUD Settings";
+    // Persistent HUD Editor button (visible in both Driving and Menu modes)
+    BOOL gearIcon = NO;
+    _hudEditButton = [self makeUtilityButtonWithTitle:@"HUD" icon:"hud_gear" width:40 height:40
+                                               action:@selector(toggleEditMode:) outHasIcon:&gearIcon];
+    _hudEditButton.accessibilityLabel = @"HUD Editor";
     [self addSubview:_hudEditButton];
-    [self registerItemKey:@"hud_gear" displayName:@"HUD BTN" view:_hudEditButton
-                        x:kHudGearX y:kTopBarY baseW:38 baseH:34 baseRadius:12.0
-                    style:ButtonStyle::TopPill isDriving:NO isMenu:NO isGlobal:YES isButton:YES isFps:NO];
+    [self registerItemKey:@"hud_gear" displayName:@"HUD EDITOR" view:_hudEditButton
+                        x:kHudGearX y:kTopBarY baseW:40 baseH:40 baseRadius:10.0
+                    style:ButtonStyle::TopPill hasIcon:gearIcon isDriving:NO isMenu:NO isGlobal:YES isButton:YES isFps:NO isMinimap:NO];
 
     // Live FPS counter pill (visible in both Driving and Menu modes, toggleable & draggable)
     _fpsLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 62, 24)];
@@ -787,9 +817,9 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _fpsLabel.userInteractionEnabled = NO;
     _fpsLabel.autoresizingMask = UIViewAutoresizingNone;
     [self addSubview:_fpsLabel];
-    [self registerItemKey:@"hud_fps" displayName:@"FPS PILL" view:_fpsLabel
+    [self registerItemKey:@"hud_fps" displayName:@"FPS COUNTER" view:_fpsLabel
                         x:kFpsPillX y:kTopBarY baseW:62 baseH:24 baseRadius:9.0
-                    style:ButtonStyle::TopPill isDriving:NO isMenu:NO isGlobal:YES isButton:NO isFps:YES];
+                    style:ButtonStyle::TopPill hasIcon:NO isDriving:NO isMenu:NO isGlobal:YES isButton:NO isFps:YES isMinimap:NO];
 
     [self buildEditorUi];
 
@@ -805,6 +835,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     [self applySteerStyleVisibility];
     [self applyActiveModeAnimated:NO];
     [self updateFpsVisibility];
+    [self pushMinimapConfigToGpu];
 
     __weak MC3TouchControlsView* weakSelf = self;
     _modeTimer = [NSTimer scheduledTimerWithTimeInterval:0.15
@@ -814,6 +845,15 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         [weakSelf syncGameUiMode];
     }];
     return self;
+}
+
+- (void)pushMinimapConfigToGpu {
+    gpu::MinimapConfig cfg{};
+    cfg.visible = (_showMinimap == YES);
+    cfg.custom = (_minimapCustom == YES);
+    cfg.norm_x = static_cast<float>(std::clamp<CGFloat>(_minimapItem.x, 0.08, 0.92));
+    cfg.norm_y = static_cast<float>(std::clamp<CGFloat>(_minimapItem.y, 0.12, 0.88));
+    gpu::SetMinimapConfig(cfg);
 }
 
 - (void)loadHudPreferences {
@@ -836,10 +876,27 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     if ([arrows isKindOfClass:[NSNumber class]]) {
         _useArrowSteering = arrows.boolValue;
     }
+    NSNumber* mmVis = saved[@"minimapVisible"];
+    if ([mmVis isKindOfClass:[NSNumber class]]) {
+        _showMinimap = mmVis.boolValue;
+    }
+    NSNumber* mmCust = saved[@"minimapCustom"];
+    if ([mmCust isKindOfClass:[NSNumber class]]) {
+        _minimapCustom = mmCust.boolValue;
+    }
+    NSNumber* mmX = saved[@"minimapX"];
+    if ([mmX isKindOfClass:[NSNumber class]] && std::isfinite(mmX.doubleValue)) {
+        _minimapItem.x = std::clamp<CGFloat>(mmX.doubleValue, 0.08, 0.92);
+    }
+    NSNumber* mmY = saved[@"minimapY"];
+    if ([mmY isKindOfClass:[NSNumber class]] && std::isfinite(mmY.doubleValue)) {
+        _minimapItem.y = std::clamp<CGFloat>(mmY.doubleValue, 0.12, 0.88);
+    }
 
     NSDictionary* itemsMap = saved[@"items"];
     if ([itemsMap isKindOfClass:[NSDictionary class]]) {
         for (MC3HudItem* item in _items) {
+            if (item.isMinimap) continue;
             NSDictionary* entry = itemsMap[item.key];
             if (![entry isKindOfClass:[NSDictionary class]]) continue;
             NSNumber* nx = entry[@"x"];
@@ -872,6 +929,10 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         @"opacity": @(_hudOpacity),
         @"showFps": @(_showFps),
         @"arrowSteering": @(_useArrowSteering),
+        @"minimapVisible": @(_showMinimap),
+        @"minimapCustom": @(_minimapCustom),
+        @"minimapX": @(_minimapItem.x),
+        @"minimapY": @(_minimapItem.y),
         @"items": itemsMap,
     };
     [[NSUserDefaults standardUserDefaults] setObject:cfg forKey:kHudPrefsKey];
@@ -882,11 +943,14 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     for (UIButton* btn : _steerArrowButtons) {
         btn.hidden = !_useArrowSteering;
     }
-    [_steerToggleButton setTitle:(_useArrowSteering ? @"◎" : @"◀▶") forState:UIControlStateNormal];
 }
 
 - (void)updateFpsVisibility {
     _fpsLabel.hidden = !_showFps;
+}
+
+- (void)updateMinimapPreviewVisibility {
+    _minimapPreviewLabel.hidden = !(_editMode && _showMinimap);
 }
 
 - (void)applyHudOpacity {
@@ -925,6 +989,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 }
 
 - (BOOL)isItemVisibleInActiveMode:(MC3HudItem*)item {
+    if (item.isMinimap) return _editMode && _showMinimap;
     if (item.isFps) return _showFps;
     if (item.isGlobal) return YES;
     const BOOL driving = (_activeMode == UiMode::Driving);
@@ -944,7 +1009,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     const CGFloat bh = CGRectGetHeight(bounds);
     if (bw <= 1.0 || bh <= 1.0) return;
 
-    const CGFloat effScale = std::clamp<CGFloat>(_globalScale * item.scale, 0.50, 2.00);
+    const CGFloat effScale = item.isMinimap ? 1.0 : std::clamp<CGFloat>(_globalScale * item.scale, 0.50, 2.00);
     const CGFloat w = std::round(item.baseW * effScale);
     const CGFloat h = std::round(item.baseH * effScale);
     const CGFloat halfW = w * 0.5;
@@ -959,7 +1024,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     item.view.center = CGPointMake(cx, cy);
     item.view.layer.cornerRadius = (item.baseRadius > 0.0) ? (item.baseRadius * effScale) : (MIN(w, h) * 0.5);
 
-    if (item.isButton) {
+    if (item.isButton && !item.hasIcon) {
         UIButton* btn = (UIButton*)item.view;
         const CGFloat fontScale = std::clamp<CGFloat>(effScale, 0.72, 1.38);
         btn.titleLabel.font = [UIFont systemFontOfSize:(BaseFontSizeForStyle(item.style) * fontScale)
@@ -977,14 +1042,16 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
             item.view.layer.borderWidth = 2.6;
             item.view.layer.borderColor = [UIColor colorWithRed:0.20 green:0.92 blue:1.0 alpha:1.0].CGColor;
         } else if (_editMode) {
-            item.view.layer.borderWidth = 1.6;
-            item.view.layer.borderColor = [UIColor colorWithRed:1.0 green:0.84 blue:0.28 alpha:0.75].CGColor;
+            item.view.layer.borderWidth = item.isMinimap ? 2.0 : 1.5;
+            item.view.layer.borderColor = item.isMinimap
+                ? [UIColor colorWithRed:0.28 green:0.88 blue:1.0 alpha:0.90].CGColor
+                : [UIColor colorWithRed:1.0 green:0.84 blue:0.28 alpha:0.75].CGColor;
+        } else if (item.hasIcon) {
+            item.view.layer.borderWidth = 0.0;
+            item.view.layer.borderColor = UIColor.clearColor.CGColor;
         } else if (item.isFps) {
             item.view.layer.borderWidth = 1.0;
             item.view.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.28].CGColor;
-        } else if (item.view == _stickView) {
-            item.view.layer.borderWidth = 1.5;
-            item.view.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.45].CGColor;
         } else {
             item.view.layer.borderWidth = (item.style == ButtonStyle::TopPill) ? 1.0 : 1.5;
             item.view.layer.borderColor = BorderColorForStyle(item.style).CGColor;
@@ -995,10 +1062,17 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 - (void)syncEditorControls {
     [_editorModeBtn setTitle:(_activeMode == UiMode::Driving ? @"DRIVE" : @"MENU") forState:UIControlStateNormal];
     [_editorSteerBtn setTitle:(_useArrowSteering ? @"ARROWS" : @"STICK") forState:UIControlStateNormal];
+    [_editorMapBtn setTitle:(_showMinimap ? @"MAP:ON" : @"MAP:OFF") forState:UIControlStateNormal];
     [_editorFpsBtn setTitle:(_showFps ? @"FPS:ON" : @"FPS:OFF") forState:UIControlStateNormal];
 
-    if (_selectedItem) {
-        _editorTargetLabel.text = [NSString stringWithFormat:@"%@", _selectedItem.displayName];
+    if (_selectedItem && _selectedItem.isMinimap) {
+        _editorTargetLabel.text = @"MINIMAP";
+        _sizeSlider.enabled = NO;
+        _sizeValueLabel.text = @"DRAG TO MOVE";
+        _editorAllBtn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    } else if (_selectedItem) {
+        _editorTargetLabel.text = _selectedItem.displayName;
+        _sizeSlider.enabled = YES;
         _sizeSlider.minimumValue = static_cast<float>(kMinItemScale);
         _sizeSlider.maximumValue = static_cast<float>(kMaxItemScale);
         _sizeSlider.value = static_cast<float>(_selectedItem.scale);
@@ -1006,6 +1080,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         _editorAllBtn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
     } else {
         _editorTargetLabel.text = @"ALL CONTROLS";
+        _sizeSlider.enabled = YES;
         _sizeSlider.minimumValue = static_cast<float>(kMinGlobalScale);
         _sizeSlider.maximumValue = static_cast<float>(kMaxGlobalScale);
         _sizeSlider.value = static_cast<float>(_globalScale);
@@ -1026,12 +1101,14 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _editOverlay.hidden = !enabled;
     _editOverlay.userInteractionEnabled = enabled;
     _editorPanel.hidden = !enabled;
+    [self updateMinimapPreviewVisibility];
 
     const BOOL driving = (_activeMode == UiMode::Driving);
     _drivingContainer.userInteractionEnabled = !enabled && driving;
     _menuContainer.userInteractionEnabled = !enabled && !driving;
 
     if (enabled) {
+        [self bringSubviewToFront:_minimapPreviewLabel];
         [self bringSubviewToFront:_editOverlay];
         [self bringSubviewToFront:_editorPanel];
         [self layoutEditorPanel];
@@ -1068,6 +1145,19 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     [self refreshSelectionHighlight];
 }
 
+- (void)editorToggleMinimap:(UIButton*)sender {
+    (void)sender;
+    _showMinimap = !_showMinimap;
+    [self updateMinimapPreviewVisibility];
+    if (_selectedItem.isMinimap && !_showMinimap) {
+        _selectedItem = nil;
+    }
+    [self pushMinimapConfigToGpu];
+    [self saveHudPreferences];
+    [self syncEditorControls];
+    [self refreshSelectionHighlight];
+}
+
 - (void)editorToggleFps:(UIButton*)sender {
     (void)sender;
     _showFps = !_showFps;
@@ -1092,6 +1182,8 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _globalScale = 1.0;
     _hudOpacity = 1.0;
     _showFps = YES;
+    _showMinimap = YES;
+    _minimapCustom = NO;
     for (MC3HudItem* item in _items) {
         item.x = item.defaultX;
         item.y = item.defaultY;
@@ -1099,6 +1191,8 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     }
     _selectedItem = nil;
     [self updateFpsVisibility];
+    [self updateMinimapPreviewVisibility];
+    [self pushMinimapConfigToGpu];
     [self applyHudOpacity];
     [self setNeedsLayout];
     [self layoutIfNeeded];
@@ -1108,11 +1202,11 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 }
 
 - (void)sizeSliderChanged:(UISlider*)slider {
-    if (_selectedItem) {
+    if (_selectedItem && !_selectedItem.isMinimap) {
         _selectedItem.scale = std::clamp<CGFloat>(slider.value, kMinItemScale, kMaxItemScale);
         [self applyLayoutForItem:_selectedItem inBounds:self.bounds];
         _sizeValueLabel.text = [NSString stringWithFormat:@"BTN SIZE %.0f%%", _selectedItem.scale * 100.0];
-    } else {
+    } else if (!_selectedItem) {
         _globalScale = std::clamp<CGFloat>(slider.value, kMinGlobalScale, kMaxGlobalScale);
         for (MC3HudItem* item in _items) {
             [self applyLayoutForItem:item inBounds:self.bounds];
@@ -1167,6 +1261,10 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _draggingItem.x = cx / bw;
     _draggingItem.y = cy / bh;
     _draggingItem.view.center = CGPointMake(cx, cy);
+    if (_draggingItem.isMinimap) {
+        _minimapCustom = YES;
+        [self pushMinimapConfigToGpu];
+    }
 }
 
 - (void)hudEditEnded {
@@ -1249,7 +1347,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     if (raw < 0 || static_cast<size_t>(raw) >= static_cast<size_t>(VirtualControl::Count)) return;
     input::SetVirtualControl(static_cast<VirtualControl>(raw), true);
     sender.alpha = 0.72;
-    sender.transform = CGAffineTransformMakeScale(0.94, 0.94);
+    sender.transform = CGAffineTransformMakeScale(0.93, 0.93);
 }
 
 - (void)controlUp:(UIButton*)sender {

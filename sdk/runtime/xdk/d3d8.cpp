@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <thread>
 #include <unordered_map>
@@ -10,7 +11,11 @@
 
 #include "app/app.h"
 #include "core/diag.h"
+#include "core/hitch_prof.h"
 #include "gpu/backend.h"
+#ifdef __APPLE__
+#include "gpu/metal.h"
+#endif
 #include "gpu/texture.h"
 #include "gpu/vertex.h"
 #include "xdk/d3d8.h"
@@ -548,6 +553,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    hitch::OnFrameSwap();
     app::Pace();
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
@@ -579,7 +585,37 @@ HLE_STDCALL(D3DDevice_CopyRects, 5) {
 HLE_STDCALL(D3DDevice_SetViewport, 1) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t v = a[0];
-    g_state.viewport = {R32(v), R32(v + 4), R32(v + 8), R32(v + 12), GF(v + 16), GF(v + 20)};
+    gpu::Viewport vp{R32(v), R32(v + 4), R32(v + 8), R32(v + 12), GF(v + 16), GF(v + 20)};
+#ifdef __APPLE__
+    // Detect MC3's bottom-left minimap sub-viewport on the main 640x480 backbuffer and apply
+    // user-configured minimap position / visibility from the iOS launcher or HUD editor.
+    uint32_t rw = 0, rh = 0;
+    if (g_state.rt.header) gpu::SurfaceSize(g_state.rt, rw, rh);
+    if (rw >= 600 && rh >= 440 &&
+        vp.w >= 64 && vp.w <= 260 && vp.h >= 64 && vp.h <= 260 &&
+        vp.x <= 220 && vp.y >= 180) {
+        const gpu::MinimapConfig mm = gpu::GetMinimapConfig();
+        const float ox = float(vp.x), oy = float(vp.y), ow = float(vp.w), oh = float(vp.h);
+        if (!mm.visible) {
+            gpu::ReportMinimapFrame(true, true, ox, oy, ow, oh, 0.0f, 0.0f);
+            vp.w = 0;
+            vp.h = 0;
+        } else if (mm.custom) {
+            const float cx = mm.norm_x * float(rw);
+            const float cy = mm.norm_y * float(rh);
+            const float nx = std::clamp(cx - ow * 0.5f, 0.0f, float(rw - vp.w));
+            const float ny = std::clamp(cy - oh * 0.5f, 0.0f, float(rh - vp.h));
+            const float dx = nx - ox;
+            const float dy = ny - oy;
+            vp.x = uint32_t(std::lround(nx));
+            vp.y = uint32_t(std::lround(ny));
+            gpu::ReportMinimapFrame(true, false, ox, oy, ow, oh, dx, dy);
+        } else {
+            gpu::ReportMinimapFrame(false, false, ox, oy, ow, oh, 0.0f, 0.0f);
+        }
+    }
+#endif
+    g_state.viewport = vp;
     g_state.scissor_count = 0;
     UpdateViewportConstants();
     return 0;

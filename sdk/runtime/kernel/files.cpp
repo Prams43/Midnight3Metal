@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #endif
 
+#include "core/hitch_prof.h"
 #include "gpu/render_profile.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
@@ -381,17 +382,22 @@ bool ReadGameFile(const std::string& xbox_path, std::vector<uint8_t>& out) {
 // exports
 
 KERNEL_EXPORT(190, NtCreateFile, 9) {
+    const uint64_t t0 = hitch::NowUs();
     uint32_t handle_out = a[0], access = a[1], attrs = a[2], iosb = a[3], disposition = a[7], options = a[8];
     (void)access;
     uint32_t root;
     std::string name = ObjectName(attrs, &root);
+    auto finish_open = [&](uint32_t st) {
+        hitch::AddIo(hitch::NowUs() - t0, 0, name.c_str());
+        return st;
+    };
     Target t = Resolve(name, root);
-    if (t.disc) return OpenOnDisc(t.entry, name, handle_out, iosb, disposition, options);
+    if (t.disc) return finish_open(OpenOnDisc(t.entry, name, handle_out, iosb, disposition, options));
     const std::string& host = t.host;
     if (host.empty()) {
         LOGW("NtCreateFile: no mapping for %s", name.c_str());
         IoStatus(iosb, kObjectPathNotFound, 0);
-        return kObjectPathNotFound;
+        return finish_open(kObjectPathNotFound);
     }
     std::error_code ec;
     bool exists = fs::exists(host, ec);
@@ -491,7 +497,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
     LOG_FIRST(400, "open %s", name.c_str());
-    return kSuccess;
+    return finish_open(kSuccess);
 }
 
 KERNEL_EXPORT(202, NtOpenFile, 6) {
@@ -604,6 +610,7 @@ static void ReplaceMotionBlurTune(const File& f, uint64_t pos, uint32_t buf, uin
 
 // pages is the FILE_SEGMENT_ELEMENT array for scatter and gather, 0 for one buffer
 static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
+    const uint64_t t0 = hitch::NowUs();
     uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
     auto f = FileFromHandle(h);
     if (!f || (!f->fp && !f->entry)) return kInvalidHandle;
@@ -639,6 +646,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         f->cached_size = ~0ull;
     }
     if (!write && !pages && n) ReplaceMotionBlurTune(*f, pos, buf, n);
+    hitch::AddIo(hitch::NowUs() - t0, n, f->xbox.c_str());
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
     return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);

@@ -6,6 +6,7 @@
 #include <mutex>
 
 #include "app/app.h"
+#include "core/hitch_prof.h"
 #include "kernel/crypto.h"
 #include "kernel/exports.h"
 #include "xbe/xbe.h"
@@ -171,7 +172,9 @@ KERNEL_EXPORT(277, RtlEnterCriticalSection, 1) {
         return 0;
     }
     ObjectRef ev = FromPointer(cs);
+    const uint64_t t0 = hitch::NowUs();
     Wait({ev}, false, INT64_MAX, false);
+    hitch::AddWait(hitch::NowUs() - t0, 3, R32(ctx.esp));
     W32(cs + 0x18, me);
     W32(cs + 0x14, 1);
     return 0;
@@ -294,11 +297,16 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
         std::this_thread::yield();
         return kSuccess;
     }
+    const uint64_t t0 = hitch::NowUs();
     while (now() < deadline) {
         int64_t left = deadline - now();
         std::this_thread::sleep_for(std::chrono::nanoseconds(std::min<int64_t>(left, 2000000)));
-        if (alertable && t && RunApcs(*t)) return kUserApc;
+        if (alertable && t && RunApcs(*t)) {
+            hitch::AddWait(hitch::NowUs() - t0, 2, R32(ctx.esp));
+            return kUserApc;
+        }
     }
+    hitch::AddWait(hitch::NowUs() - t0, 2, R32(ctx.esp));
     return kSuccess;
 }
 
@@ -666,13 +674,19 @@ KERNEL_EXPORT(230, NtSignalAndWaitForSingleObjectEx, 5) {
 KERNEL_EXPORT(233, NtWaitForSingleObject, 3) {
     ObjectRef o = FromHandle(a[0]);
     if (!o) return kInvalidHandle;
-    return Wait({o}, false, TimeoutArg(a[2]), a[1] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait({o}, false, TimeoutArg(a[2]), a[1] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(234, NtWaitForSingleObjectEx, 4) {
     ObjectRef o = FromHandle(a[0]);
     if (!o) return kInvalidHandle;
-    return Wait({o}, false, TimeoutArg(a[3]), a[2] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait({o}, false, TimeoutArg(a[3]), a[2] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(235, NtWaitForMultipleObjectsEx, 6) {
@@ -682,18 +696,27 @@ KERNEL_EXPORT(235, NtWaitForMultipleObjectsEx, 6) {
         if (!o) return kInvalidHandle;
         objs.push_back(o);
     }
-    return Wait(objs, a[2] == 0, TimeoutArg(a[5]), a[4] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait(objs, a[2] == 0, TimeoutArg(a[5]), a[4] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(159, KeWaitForSingleObject, 5) {
     ObjectRef o = FromPointer(a[0]);
-    return Wait({o}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait({o}, false, TimeoutArg(a[4]), a[3] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(158, KeWaitForMultipleObjects, 8) {
     std::vector<ObjectRef> objs;
     for (uint32_t i = 0; i < a[0]; i++) objs.push_back(FromPointer(R32(a[1] + i * 4)));
-    return Wait(objs, a[2] == 0, TimeoutArg(a[6]), a[5] & 0xFF);
+    const uint64_t t0 = hitch::NowUs();
+    const uint32_t r = Wait(objs, a[2] == 0, TimeoutArg(a[6]), a[5] & 0xFF);
+    hitch::AddWait(hitch::NowUs() - t0, 1, R32(ctx.esp));
+    return r;
 }
 
 KERNEL_EXPORT(145, KeSetEvent, 3) { return uint32_t(SetEvent(*FromPointer(a[0]))); }
