@@ -41,18 +41,18 @@ struct ControlSpec {
 
 // Native mobile racing HUD (shown automatically during active driving / racing):
 // - Bottom-left: sleek analog steering pad (toggleable to left/right steer pedals)
-// - Bottom-right: tall GAS pedal (R-Trigger), REM brake pedal (L-Trigger),
+// - Bottom-right: tall GAS pedal (R-Trigger), BRAKE pedal (L-Trigger),
 //   NOS turbo (X), DRIFT handbrake (A), SPEC special (L3), 2W weight/skip (B)
 // - Top-left/center utility strip: Pause, Map, Camera, Rear View, Flash/Challenge, Next Song
 //   (Top-right is kept completely clear for the race timer & POS HUD.)
 constexpr std::array<ControlSpec, 12> kDrivingControls{{
     // Primary racing pedals & actions (bottom-right)
     {VirtualControl::TriggerR,  "GAS",   0.928, 0.785, 68, 114, 18, ButtonStyle::Gas},
-    {VirtualControl::TriggerL,  "REM",   0.818, 0.835, 66,  80, 16, ButtonStyle::Brake},
+    {VirtualControl::TriggerL,  "BRAKE", 0.816, 0.835, 70,  80, 16, ButtonStyle::Brake},
     {VirtualControl::FaceX,     "NOS",   0.822, 0.585, 60,  60,  0, ButtonStyle::Nitro},
     {VirtualControl::FaceA,     "DRIFT", 0.928, 0.525, 62,  54, 16, ButtonStyle::Drift},
-    {VirtualControl::ThumbL,    "SPEC",  0.718, 0.695, 56,  42, 14, ButtonStyle::Special},
-    {VirtualControl::FaceB,     "2W",    0.718, 0.865, 54,  42, 14, ButtonStyle::Neutral},
+    {VirtualControl::ThumbL,    "SPEC",  0.716, 0.695, 56,  42, 14, ButtonStyle::Special},
+    {VirtualControl::FaceB,     "2W",    0.716, 0.865, 54,  42, 14, ButtonStyle::Neutral},
     // Minimal top utility pills (clear of top-right timer/POS)
     {VirtualControl::Start,     "⏸",     0.050, 0.095, 44,  34, 12, ButtonStyle::TopPill},
     {VirtualControl::MenuBack,  "MAP",   0.120, 0.095, 50,  34, 12, ButtonStyle::TopPill},
@@ -78,7 +78,7 @@ constexpr std::array<ControlSpec, 13> kMenuControls{{
     // Primary menu actions (bottom-right)
     {VirtualControl::Confirm,   "OK",     0.895, 0.855, 96, 52, 16, ButtonStyle::Confirm},
     {VirtualControl::FaceB,     "BACK",   0.895, 0.695, 96, 46, 15, ButtonStyle::Cancel},
-    {VirtualControl::FaceX,     "OPSI",   0.762, 0.855, 68, 44, 14, ButtonStyle::Neutral},
+    {VirtualControl::FaceX,     "OPTS",   0.762, 0.855, 68, 44, 14, ButtonStyle::Neutral},
     {VirtualControl::FaceY,     "VIEW",   0.762, 0.700, 68, 44, 14, ButtonStyle::Neutral},
     // Top bar (Garage tabs, camera zoom, Start)
     {VirtualControl::ShoulderL, "◀ TAB",  0.075, 0.095, 62, 34, 12, ButtonStyle::TopPill},
@@ -117,7 +117,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         bg = [UIColor colorWithRed:0.36 green:0.07 blue:0.10 alpha:0.54];
         border = [UIColor colorWithRed:1.0 green:0.34 blue:0.38 alpha:0.85];
         titleColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.88 alpha:1.0];
-        fontSize = 15.0;
+        fontSize = 13.5;
         break;
     case ButtonStyle::Nitro:
         bg = [UIColor colorWithRed:0.04 green:0.22 blue:0.38 alpha:0.56];

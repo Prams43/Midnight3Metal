@@ -408,9 +408,12 @@ constexpr uint64_t kRangedSpanSlack = 64;
 bool AssembleConverted(const State& s, const Inputs& inputs, const DrawRange& d, Assembled& out) {
     using namespace kernel;
     int nregs = inputs.nregs;
-    std::vector<uint32_t> seq(d.count);
-    for (uint32_t i = 0; i < d.count; i++) seq[i] = DrawVertex(s, d, i);
     bool ranged = uint64_t(d.span) <= uint64_t(d.count) * kRangedSpanPerVertex + kRangedSpanSlack;
+    thread_local std::vector<uint32_t> seq;
+    if (!ranged || !NativePrimitive(d.prim)) {
+        seq.resize(d.count);
+        for (uint32_t i = 0; i < d.count; i++) seq[i] = DrawVertex(s, d, i);
+    }
     uint32_t n = ranged ? d.span : d.count;
     out.vertex_count = n;
     out.vertices.resize(size_t(n) * nregs * 4);
@@ -420,15 +423,26 @@ bool AssembleConverted(const State& s, const Inputs& inputs, const DrawRange& d,
         uint32_t data = mem::VirtualFromPhysical(R32(st.vb + kResData));
         uint32_t stride = StrideOf(s, inputs.layout, in);
         const uint8_t* src = static_cast<const uint8_t*>(HostPtr(data + in.offset));
-        for (uint32_t v = 0; v < n; v++) {
-            uint32_t id = ranged ? d.first_vertex + v : seq[v];
-            Convert(in.type, src + size_t(id) * stride, &out.vertices[(size_t(v) * nregs + k) * 4]);
+        if (ranged) {
+            const uint8_t* p = src + size_t(d.first_vertex) * stride;
+            float* dst = out.vertices.data() + size_t(k) * 4;
+            const size_t dst_step = size_t(nregs) * 4;
+            for (uint32_t v = 0; v < n; v++, p += stride, dst += dst_step) {
+                Convert(in.type, p, dst);
+            }
+        } else {
+            float* dst = out.vertices.data() + size_t(k) * 4;
+            const size_t dst_step = size_t(nregs) * 4;
+            for (uint32_t v = 0; v < n; v++, dst += dst_step) {
+                Convert(in.type, src + size_t(seq[v]) * stride, dst);
+            }
         }
         out.elements[size_t(inputs.regs[k])] = {DXGI_FORMAT_R32G32B32A32_FLOAT, 0, uint16_t(k * 16)};
     }
     out.buffer_count = 1;
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(out.vertices.data());
     out.buffers[0] = {bytes, uint32_t(out.vertices.size() * 4), uint32_t(nregs * 16)};
+    if (NativePrimitive(d.prim)) return DrawNative(d, ranged, out);
     auto local = [&](uint32_t i) { return ranged ? seq[i] - d.first_vertex : i; };
     ListIndices(d.prim, d.count, local, out.indices, out.topology);
     return UseIndexList(out);

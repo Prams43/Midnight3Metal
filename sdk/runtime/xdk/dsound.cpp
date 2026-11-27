@@ -162,6 +162,7 @@ struct Voice {
     bool playing = false, looping = false, paused = false;
     bool sync = false;  // held until IDirectSound_SynchPlayback
     bool active = false, ending = false;  // stream: took a packet since it went quiet, quiet again once they run out
+    bool flushed_env = false;             // stream stopped via DSSTREAMFLUSHEX_ENVELOPE/ENVELOPE2 until reset/reused
     double pos = 0;  // frames
     double hz = 0;   // playback rate SetFrequency or SetPitch last set, 0 the format's
     // stream
@@ -1210,6 +1211,7 @@ static void FlushStream(Voice& v, bool async_cb = false) {
 
 STREAM(AddRef, 1) { return uint32_t(++v.refs); }
 STREAM(SetFormat, 2) {
+    v.flushed_env = false;
     FlushStream(v);
     ReadFormat(v, a[1]);
     v.hz = 0;  // the XDK sets the pitch back to the new format's own rate
@@ -1218,6 +1220,7 @@ STREAM(SetFormat, 2) {
 }
 STREAM(Release, 1) {
     if (--v.refs > 0) return uint32_t(v.refs);
+    v.flushed_env = false;
     FlushStream(v);
     uint32_t obj = v.obj;
     g_voices.erase(obj);
@@ -1233,6 +1236,12 @@ STREAM(GetInfo, 2) {
     return 0;
 }
 STREAM(GetStatus, 2) {
+    if (v.flushed_env) {
+        // After DSSTREAMFLUSHEX_ENVELOPE / ENVELOPE2 completes, the stream is stopped and
+        // accepts no more input until reset (Flush/FlushEx without envelope, SetFormat, or Pause resume).
+        W32(a[1], 0u);
+        return 0;
+    }
     uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;  // DSSTREAMSTATUS_READY / XMEDIASTATUS_ACCEPT_INPUT
     if (v.paused) st |= 0x00020000u;                           // DSSTREAMSTATUS_PAUSED
     else if (v.active && !v.sync) {
@@ -1256,6 +1265,12 @@ STREAM(Process, 3) {
     uint32_t in = a[1];
     if (!in) return 0;
     Packet pk{R32(in), R32(in + 4), R32(in + 8), R32(in + 12), R32(in + 16)};
+    if (v.flushed_env) {
+        // Reject late in-flight packets after an envelope flush with E_ABORT so stopped
+        // XACT music tracks (menu/garage/previous race) cannot resurrect and overlap new tracks.
+        Complete(v, pk, kFlushed);
+        return 0;
+    }
     if (pk.completed_ptr) W32(pk.completed_ptr, 0);
     if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
     v.packets.push_back(pk);
@@ -1269,11 +1284,14 @@ STREAM(Discontinuity, 1) {
     return 0;
 }
 STREAM(Flush, 1) {
+    v.flushed_env = false;
     FlushStream(v);
     return 0;
 }
 STREAM(FlushEx, 4) {
-    const bool async_cb = (a[3] & 1u) != 0;  // DSSTREAMFLUSHEX_ASYNC
+    const bool async_cb = (a[3] & 1u) != 0;   // DSSTREAMFLUSHEX_ASYNC
+    const bool env_flush = (a[3] & 6u) != 0;  // DSSTREAMFLUSHEX_ENVELOPE | DSSTREAMFLUSHEX_ENVELOPE2
+    v.flushed_env = env_flush;
     if (a[3] && !v.active && v.packets.empty()) {
         bool has_done = false;
         for (const auto& d : g_done) {
@@ -1288,8 +1306,9 @@ STREAM(FlushEx, 4) {
     return 0;
 }
 STREAM(Pause, 2) {
-    v.paused = (a[1] == 1 || a[1] == 3);  // DSSPAUSE_PAUSE, DSSPAUSE_PAUSENOACTIVATE
-    v.sync = (a[1] == 2);                 // DSSPAUSE_SYNCHPLAYBACK
+    if (a[1] == 0 || a[1] == 2) v.flushed_env = false;  // DSSPAUSE_RESUME / DSSPAUSE_SYNCHPLAYBACK
+    v.paused = (a[1] == 1 || a[1] == 3);                // DSSPAUSE_PAUSE, DSSPAUSE_PAUSENOACTIVATE
+    v.sync = (a[1] == 2);                               // DSSPAUSE_SYNCHPLAYBACK
     return 0;
 }
 STREAM(SetVolume, 2) {

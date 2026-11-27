@@ -251,7 +251,7 @@ public:
         vs_func_ = vs;
         fs_func_ = fs;
 
-        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0, 0, MTLColorWriteMaskAll);
+        pipeline_ = GetPipeline(0, 0, vs_func_, fs_func_, false, 1, 0, 0, MTLColorWriteMaskAll, 0xFFFFu);
         if (!pipeline_) return false;
 
         // Fullscreen blit and masked/sub-rect clear pipelines
@@ -539,7 +539,7 @@ public:
 
     void DrawImpl(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
 
-        Assembled a;
+        Assembled& a = assembled_;
         if (!Assemble(s, prim, start, count, indices, a)) return;
         if (a.vertex_count == 0 || (a.regs & 1u) == 0) return;
 
@@ -566,15 +566,17 @@ public:
         };
 
         RegSrc pos_src{};
-        if (!build_reg(0, pos_src)) return;
-
         RegSrc active_regs[15];
         int active_count = 0;
-        uint16_t active_mask = 1u;
-        for (int r = 1; r < 16; ++r) {
-            if (build_reg(r, active_regs[active_count])) {
-                active_mask |= uint16_t(1u << r);
-                ++active_count;
+        uint16_t active_mask = a.regs;
+        if (!has_conv) {
+            if (!build_reg(0, pos_src)) return;
+            active_mask = 1u;
+            for (int r = 1; r < 16; ++r) {
+                if (build_reg(r, active_regs[active_count])) {
+                    active_mask |= uint16_t(1u << r);
+                    ++active_count;
+                }
             }
         }
 
@@ -684,51 +686,70 @@ public:
             ps_hash = 0;
         }
 
-        scratch_verts_.resize(a.vertex_count);
-        MetalVertex* verts = scratch_verts_.data();
-        const float inv_w = 2.0f / float(target_w);
-        const float inv_h = 2.0f / float(target_h);
-        const bool need_fallback_c3 = !use_translated && ((active_mask & (1u << 3)) == 0);
-        const bool need_fallback_t9 = !use_translated && ((active_mask & (1u << 9)) == 0);
-
-        for (uint32_t i = 0; i < a.vertex_count; ++i) {
-            float p[4] = {};
-            if (!ReadReg(pos_src, i, has_conv, conv_ptr, reg_count, p)) return;
-            MetalVertex& dst = verts[i];
-            if (use_translated) {
-                dst.v[0][0] = p[0];
-                dst.v[0][1] = p[1];
-                dst.v[0][2] = p[2];
-                dst.v[0][3] = (p[3] != 0.0f) ? p[3] : 1.0f;
-            } else if (a.pretransformed) {
-                dst.v[0][0] = p[0] * inv_w - 1.0f;
-                dst.v[0][1] = 1.0f - p[1] * inv_h;
-                dst.v[0][2] = p[2];
-                dst.v[0][3] = 1.0f;
-            } else {
-                p[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
-                float wv[4], vv[4], pv[4];
-                MulMat4Vec4(s.transforms[256].data(), p, wv);
-                MulMat4Vec4(s.transforms[2].data(), wv, vv);
-                MulMat4Vec4(s.transforms[3].data(), vv, pv);
-                dst.v[0][0] = pv[0];
-                dst.v[0][1] = pv[1];
-                dst.v[0][2] = pv[2];
-                dst.v[0][3] = pv[3];
-            }
-
-            for (int k = 0; k < active_count; ++k) {
-                const RegSrc& rs = active_regs[k];
-                if (!ReadReg(rs, i, has_conv, conv_ptr, reg_count, dst.v[rs.reg])) {
-                    DefaultReg(rs.reg, dst.v[rs.reg]);
+        // Fast zero-copy path: translated MSL shaders read tightly-packed float4[nregs] vertices
+        // directly from AssembleConverted (e.g. 48 B/vert instead of 256 B/vert = ~5x less bandwidth).
+        const bool direct_packed_vb = (use_translated && has_conv);
+        const void* vb_src = nullptr;
+        size_t vb_bytes = 0;
+        if (direct_packed_vb) {
+            vb_src = a.vertices.data();
+            vb_bytes = a.vertices.size() * sizeof(float);
+        } else {
+            if (has_conv) {
+                if (!build_reg(0, pos_src)) return;
+                active_count = 0;
+                for (int r = 1; r < 16; ++r) {
+                    if (build_reg(r, active_regs[active_count])) ++active_count;
                 }
             }
-            if (need_fallback_c3) DefaultReg(3, dst.v[3]);
-            if (need_fallback_t9) DefaultReg(9, dst.v[9]);
+            scratch_verts_.resize(a.vertex_count);
+            MetalVertex* verts = scratch_verts_.data();
+            const float inv_w = 2.0f / float(target_w);
+            const float inv_h = 2.0f / float(target_h);
+            const bool need_fallback_c3 = !use_translated && ((active_mask & (1u << 3)) == 0);
+            const bool need_fallback_t9 = !use_translated && ((active_mask & (1u << 9)) == 0);
+
+            for (uint32_t i = 0; i < a.vertex_count; ++i) {
+                float p[4] = {};
+                if (!ReadReg(pos_src, i, has_conv, conv_ptr, reg_count, p)) return;
+                MetalVertex& dst = verts[i];
+                if (use_translated) {
+                    dst.v[0][0] = p[0];
+                    dst.v[0][1] = p[1];
+                    dst.v[0][2] = p[2];
+                    dst.v[0][3] = (p[3] != 0.0f) ? p[3] : 1.0f;
+                } else if (a.pretransformed) {
+                    dst.v[0][0] = p[0] * inv_w - 1.0f;
+                    dst.v[0][1] = 1.0f - p[1] * inv_h;
+                    dst.v[0][2] = p[2];
+                    dst.v[0][3] = 1.0f;
+                } else {
+                    p[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
+                    float wv[4], vv[4], pv[4];
+                    MulMat4Vec4(s.transforms[256].data(), p, wv);
+                    MulMat4Vec4(s.transforms[2].data(), wv, vv);
+                    MulMat4Vec4(s.transforms[3].data(), vv, pv);
+                    dst.v[0][0] = pv[0];
+                    dst.v[0][1] = pv[1];
+                    dst.v[0][2] = pv[2];
+                    dst.v[0][3] = pv[3];
+                }
+
+                for (int k = 0; k < active_count; ++k) {
+                    const RegSrc& rs = active_regs[k];
+                    if (!ReadReg(rs, i, has_conv, conv_ptr, reg_count, dst.v[rs.reg])) {
+                        DefaultReg(rs.reg, dst.v[rs.reg]);
+                    }
+                }
+                if (need_fallback_c3) DefaultReg(3, dst.v[3]);
+                if (need_fallback_t9) DefaultReg(9, dst.v[9]);
+            }
+            vb_src = verts;
+            vb_bytes = size_t(a.vertex_count) * sizeof(MetalVertex);
         }
 
         if (!EnsureEncoderFor(rt_va, zs_va, target_w, target_h)) return;
-        color_rts_[rt_va].drawn = true;
+        if (active_ct_) active_ct_->drawn = true;
         last_rt_va_ = rt_va;
 
         // Always clip to the active viewport (and any explicit scissor rect) just like
@@ -767,8 +788,9 @@ public:
         const MTLColorWriteMask write_mask = s.rt.header
             ? ToMetalWriteMask(cw_raw)
             : MTLColorWriteMaskAll;
+        const uint16_t vd_regs = direct_packed_vb ? a.regs : 0xFFFFu;
         id<MTLRenderPipelineState> pso = GetPipeline(vs_hash, ps_hash, active_vs, active_fs,
-                                                     blend_on, src_b, dst_b, blend_op, write_mask);
+                                                     blend_on, src_b, dst_b, blend_op, write_mask, vd_regs);
         if (!pso) return;
 
         const bool z_en = s.rs[kRsZEnable] != 0;
@@ -776,10 +798,9 @@ public:
         const uint32_t z_fn = s.simple[kMZFunc / 4];
         id<MTLDepthStencilState> dss = GetDepthStencil(z_en, z_wr, z_fn);
 
-        const size_t vb_bytes = size_t(a.vertex_count) * sizeof(MetalVertex);
         id<MTLBuffer> vb = nil;
         NSUInteger vb_off = 0;
-        if (!AllocateRing(verts, vb_bytes, 16, vb, vb_off)) return;
+        if (!AllocateRing(vb_src, vb_bytes, 16, vb, vb_off)) return;
 
         if (pso != bound_pso_) {
             [encoder_ setRenderPipelineState:pso];
@@ -1240,23 +1261,47 @@ private:
         }
     }
 
+    MTLVertexDescriptor* GetVertexDescriptor(uint16_t regs) {
+        if (regs == 0xFFFFu) return vertex_desc_;
+        if (auto it = vd_cache_.find(regs); it != vd_cache_.end()) return it->second;
+        @autoreleasepool {
+            MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
+            NSUInteger slot = 0;
+            for (NSUInteger r = 0; r < 16; ++r) {
+                if (regs & (1u << r)) {
+                    vd.attributes[r].format = MTLVertexFormatFloat4;
+                    vd.attributes[r].offset = slot * sizeof(float) * 4;
+                    vd.attributes[r].bufferIndex = 0;
+                    ++slot;
+                }
+            }
+            vd.layouts[0].stride = slot * sizeof(float) * 4;
+            vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+            vd_cache_[regs] = vd;
+            return vd;
+        }
+    }
+
     id<MTLRenderPipelineState> GetPipeline(uint64_t vs_hash, uint64_t ps_hash,
                                            id<MTLFunction> vs, id<MTLFunction> fs,
                                            bool blend, uint32_t src_b, uint32_t dst_b,
-                                           uint32_t blend_op, MTLColorWriteMask write_mask) {
+                                           uint32_t blend_op, MTLColorWriteMask write_mask,
+                                           uint16_t vd_regs) {
         const uint64_t state_bits = (uint64_t(blend) << 56) |
                                     (uint64_t(write_mask & 0xF) << 48) |
                                     (uint64_t(blend_op & 0xFFFF) << 32) |
                                     (uint64_t(src_b & 0xFFFF) << 16) |
                                     uint64_t(dst_b & 0xFFFF);
-        const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^ (state_bits * 0xBF58476D1CE4E5B9ull);
+        const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^
+                             (state_bits * 0xBF58476D1CE4E5B9ull) ^
+                             (uint64_t(vd_regs) * 0x94D049BB133111EBull);
         if (auto it = pso_cache_.find(key); it != pso_cache_.end()) return it->second;
 
         @autoreleasepool {
             MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
             desc.vertexFunction = vs;
             desc.fragmentFunction = fs;
-            desc.vertexDescriptor = vertex_desc_;
+            desc.vertexDescriptor = GetVertexDescriptor(vd_regs);
             desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
             desc.colorAttachments[0].writeMask = write_mask;
             desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
@@ -1499,6 +1544,7 @@ private:
             encoder_ = nil;
             active_color_tex_ = nil;
             active_depth_tex_ = nil;
+            active_ct_ = nullptr;
             ResetEncoderState();
         }
     }
@@ -1778,6 +1824,7 @@ private:
         if (!ct.tex || !dt.tex) return false;
         if (encoder_ && active_color_tex_ == ct.tex && active_depth_tex_ == dt.tex &&
             !ct.pending_clear && !dt.pending_clear) {
+            active_ct_ = &ct;
             return true;
         }
         EndEncoder();
@@ -1797,6 +1844,7 @@ private:
         if (!encoder_) return false;
         active_color_tex_ = ct.tex;
         active_depth_tex_ = dt.tex;
+        active_ct_ = &ct;
         ct.pending_clear = false;
         dt.pending_clear = false;
         ResetEncoderState();
@@ -1834,6 +1882,7 @@ private:
     id<MTLSamplerState> sampler_ = nil;
     id<MTLSamplerState> wrap_sampler_ = nil;
     std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pso_cache_;
+    std::unordered_map<uint16_t, MTLVertexDescriptor*> vd_cache_;
     std::unordered_map<uint64_t, id<MTLFunction>> vs_cache_;
     std::unordered_map<uint64_t, id<MTLFunction>> fs_cache_;
     std::unordered_set<uint64_t> failed_shaders_;
@@ -1846,6 +1895,7 @@ private:
     uint32_t ring_idx_ = 0;
     size_t ring_off_ = 0;
     id<MTLBuffer> vsc_dummy_buf_ = nil;
+    Assembled assembled_;
     std::vector<MetalVertex> scratch_verts_;
     std::vector<uint16_t> scratch_idx16_;
     std::vector<uint32_t> scratch_idx32_;
@@ -1869,6 +1919,7 @@ private:
     id<MTLRenderCommandEncoder> encoder_ = nil;
     id<MTLTexture> active_color_tex_ = nil;
     id<MTLTexture> active_depth_tex_ = nil;
+    ColorTarget* active_ct_ = nullptr;
     id<MTLCommandBuffer> last_cmd_buf_ = nil;
 };
 
