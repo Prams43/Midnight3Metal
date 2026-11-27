@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
@@ -24,6 +25,9 @@
 
 void Mc2ApplyDebugBootArgs();
 bool Mc2CityFirstDrawReady();
+namespace dsound {
+void LogActiveVoices(const char* tag);
+}
 
 namespace {
 constexpr uint32_t kMcpxBase = 0xFE800000;
@@ -286,7 +290,13 @@ void Mc3MainLoopPadProbe(X86Context& ctx, uint8_t* base) {
     if (!career_movie_started)
         mc2::HandleCareerMovieTick(ctx, base, ctx.eax, movie, movie_flags);
     if (calls++ < 3 || ctx.eax != last_state || movie != last_movie) {
+        const bool state_changed = (last_state != ~0u && ctx.eax != last_state);
         LOGE("MC3: state=%u movie=%08X movie_flags=%04X", ctx.eax, movie, unsigned(movie_flags));
+        if (state_changed) {
+            char tag[32];
+            std::snprintf(tag, sizeof(tag), "state %u->%u", last_state, ctx.eax);
+            dsound::LogActiveVoices(tag);
+        }
         last_state = ctx.eax;
         last_movie = movie;
     }

@@ -9,7 +9,10 @@
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <dispatch/dispatch.h>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -24,6 +27,7 @@ namespace gpu {
 namespace {
 
 CAMetalLayer* g_metal_layer = nil;
+std::atomic<uint32_t> g_presented_frames{0};
 
 struct MetalVertex {
     float v[16][4];
@@ -182,7 +186,17 @@ MTLPrimitiveType ToMetalPrimitive(Topology topo, bool strip) {
 
 class MetalBackend final : public Backend {
 public:
-    ~MetalBackend() override { Flush(); }
+    ~MetalBackend() override {
+        Flush();
+        if (frame_sem_) {
+            for (uint32_t i = 0; i < kRingCount; ++i) {
+                dispatch_semaphore_wait(frame_sem_, DISPATCH_TIME_FOREVER);
+            }
+            for (uint32_t i = 0; i < kRingCount; ++i) {
+                dispatch_semaphore_signal(frame_sem_);
+            }
+        }
+    }
 
     bool Init(uint32_t width, uint32_t height) override {
         guest_width_ = width ? width : 640;
@@ -283,6 +297,22 @@ public:
         sd.sAddressMode = MTLSamplerAddressModeRepeat;
         sd.tAddressMode = MTLSamplerAddressModeRepeat;
         wrap_sampler_ = [device_ newSamplerStateWithDescriptor:sd];
+
+        // Triple-buffered transient upload ring for vertices, indices, and constants (zero per-draw Metal allocs)
+        frame_sem_ = dispatch_semaphore_create(kRingCount);
+        const MTLResourceOptions ring_opts =
+            MTLResourceStorageModeShared | MTLResourceHazardTrackingModeUntracked;
+        for (uint32_t i = 0; i < kRingCount; ++i) {
+            ring_buf_[i] = [device_ newBufferWithLength:kRingSize options:ring_opts];
+            ring_ptr_[i] = ring_buf_[i] ? static_cast<uint8_t*>([ring_buf_[i] contents]) : nullptr;
+        }
+        vsc_dummy_buf_ = [device_ newBufferWithLength:sizeof(State::vsc) options:MTLResourceStorageModeShared];
+        if (vsc_dummy_buf_) {
+            std::memset([vsc_dummy_buf_ contents], 0, sizeof(State::vsc));
+        }
+        scratch_verts_.reserve(4096);
+        scratch_idx16_.reserve(8192);
+        scratch_idx32_.reserve(8192);
 
         LOGI("metal: backend initialized (%ux%u, device=%s)", guest_width_, guest_height_,
              [device_.name UTF8String]);
@@ -444,8 +474,66 @@ public:
         if (IsDepthSurface(s.rt)) return;
         const uint32_t blend_op = s.simple[kMBlendOp / 4];
         if (s.simple[kMBlendEnable / 4] && (blend_op == 0xF005 || blend_op == 0xF006)) return;
-        @autoreleasepool {
-            DrawImpl(s, prim, start, count, indices);
+        DrawImpl(s, prim, start, count, indices);
+    }
+
+    struct RegSrc {
+        int reg = 0;
+        int slot = 0;
+        const uint8_t* src = nullptr;
+        uint32_t stride = 0;
+        uint32_t bytes = 0;
+        uint16_t offset = 0;
+        uint8_t format = 0;
+    };
+
+    static inline void DefaultReg(int r, float out[4]) {
+        if (r == 3) {
+            out[0] = out[1] = out[2] = out[3] = 1.0f;
+        } else if (r == 2) {
+            out[0] = 0.0f; out[1] = 0.0f; out[2] = 1.0f; out[3] = 0.0f;
+        } else if (r == 4) {
+            out[0] = out[1] = out[2] = out[3] = 0.0f;
+        } else {
+            out[0] = 0.0f; out[1] = 0.0f; out[2] = 0.0f; out[3] = 1.0f;
+        }
+    }
+
+    static inline bool ReadReg(const RegSrc& rs, uint32_t v, bool has_conv, const float* conv, int reg_count, float out[4]) {
+        if (has_conv) {
+            std::memcpy(out, conv + (size_t(v) * size_t(reg_count) + size_t(rs.slot)) * 4, 16);
+            return true;
+        }
+        const size_t off = size_t(v) * rs.stride + rs.offset;
+        if (off >= rs.bytes) return false;
+        const uint8_t* p = rs.src + off;
+        switch (rs.format) {
+        case 2: // DXGI_FORMAT_R32G32B32A32_FLOAT
+            std::memcpy(out, p, 16);
+            return true;
+        case 6: // DXGI_FORMAT_R32G32B32_FLOAT
+            std::memcpy(out, p, 12);
+            out[3] = 1.0f;
+            return true;
+        case 16: // DXGI_FORMAT_R32G32_FLOAT
+            std::memcpy(out, p, 8);
+            out[2] = 0.0f;
+            out[3] = 1.0f;
+            return true;
+        case 87: // DXGI_FORMAT_B8G8R8A8_UNORM (D3DCOLOR)
+            out[0] = p[2] * (1.0f / 255.0f);
+            out[1] = p[1] * (1.0f / 255.0f);
+            out[2] = p[0] * (1.0f / 255.0f);
+            out[3] = p[3] * (1.0f / 255.0f);
+            return true;
+        case 28: // DXGI_FORMAT_R8G8B8A8_UNORM
+            out[0] = p[0] * (1.0f / 255.0f);
+            out[1] = p[1] * (1.0f / 255.0f);
+            out[2] = p[2] * (1.0f / 255.0f);
+            out[3] = p[3] * (1.0f / 255.0f);
+            return true;
+        default:
+            return false;
         }
     }
 
@@ -453,51 +541,42 @@ public:
 
         Assembled a;
         if (!Assemble(s, prim, start, count, indices, a)) return;
-        if (a.vertex_count == 0) return;
+        if (a.vertex_count == 0 || (a.regs & 1u) == 0) return;
 
-        auto read_attr = [&](int reg, uint32_t v, float out[4]) -> bool {
-            if ((a.regs & (1u << reg)) == 0) return false;
-            if (!a.vertices.empty()) {
-                const int reg_count = std::popcount(a.regs);
-                const int slot = std::popcount(a.regs & ((1u << reg) - 1));
-                const float* p = &a.vertices[(size_t(v) * size_t(reg_count) + size_t(slot)) * 4];
-                std::memcpy(out, p, 16);
+        const bool has_conv = !a.vertices.empty();
+        const float* conv_ptr = has_conv ? a.vertices.data() : nullptr;
+        const int reg_count = has_conv ? std::popcount(a.regs) : 0;
+
+        auto build_reg = [&](int r, RegSrc& out) -> bool {
+            if ((a.regs & (1u << r)) == 0) return false;
+            out.reg = r;
+            if (has_conv) {
+                out.slot = std::popcount(uint16_t(a.regs & ((1u << r) - 1)));
                 return true;
             }
-            const auto& e = a.elements[size_t(reg)];
+            const auto& e = a.elements[size_t(r)];
             if (e.buffer >= a.buffer_count || !a.buffers[e.buffer].src) return false;
             const auto& buf = a.buffers[e.buffer];
-            const size_t off = size_t(v) * buf.stride + e.offset;
-            if (off >= buf.bytes) return false;
-            const uint8_t* p = buf.src + off;
-            out[0] = out[1] = out[2] = 0.0f;
-            out[3] = 1.0f;
-            switch (e.format) {
-            case 2: // DXGI_FORMAT_R32G32B32A32_FLOAT
-                std::memcpy(out, p, 16);
-                return true;
-            case 6: // DXGI_FORMAT_R32G32B32_FLOAT
-                std::memcpy(out, p, 12);
-                return true;
-            case 16: // DXGI_FORMAT_R32G32_FLOAT
-                std::memcpy(out, p, 8);
-                return true;
-            case 87: // DXGI_FORMAT_B8G8R8A8_UNORM (D3DCOLOR)
-                out[0] = p[2] / 255.0f;
-                out[1] = p[1] / 255.0f;
-                out[2] = p[0] / 255.0f;
-                out[3] = p[3] / 255.0f;
-                return true;
-            case 28: // DXGI_FORMAT_R8G8B8A8_UNORM
-                out[0] = p[0] / 255.0f;
-                out[1] = p[1] / 255.0f;
-                out[2] = p[2] / 255.0f;
-                out[3] = p[3] / 255.0f;
-                return true;
-            default:
-                return false;
-            }
+            out.src = buf.src;
+            out.stride = buf.stride;
+            out.bytes = buf.bytes;
+            out.offset = e.offset;
+            out.format = e.format;
+            return true;
         };
+
+        RegSrc pos_src{};
+        if (!build_reg(0, pos_src)) return;
+
+        RegSrc active_regs[15];
+        int active_count = 0;
+        uint16_t active_mask = 1u;
+        for (int r = 1; r < 16; ++r) {
+            if (build_reg(r, active_regs[active_count])) {
+                active_mask |= uint16_t(1u << r);
+                ++active_count;
+            }
+        }
 
         const uint32_t rt_va = s.rt.header ? mem::VirtualFromPhysical(s.rt.data) : 0u;
         const uint32_t zs_va = s.zs.header ? mem::VirtualFromPhysical(s.zs.data) : rt_va;
@@ -561,15 +640,14 @@ public:
         }
 
         // Determine active vertex registers supplied by our full 16-register MetalVertex layout
-        constexpr uint16_t kSupportedRegs = 0xFFFFu;
-        const uint16_t supplied_regs = (a.regs & kSupportedRegs) | (1u << 0);
-        const FixedKey fk = MakeFixedKey(s);
+        const uint16_t supplied_regs = active_mask | (1u << 0);
+        const bool is_prog_vs = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
+        const FixedKey fk = is_prog_vs ? FixedKey{} : MakeFixedKey(s);
         uint64_t vs_hash = 0, ps_hash = 0;
         id<MTLFunction> active_vs = nil;
         id<MTLFunction> active_fs = nil;
 
         {
-            const bool is_prog_vs = (s.vs_handle & 1) && s.vs && !s.vs->program.empty();
             if (is_prog_vs) {
                 uint64_t prog_h = s.vs->hash ? s.vs->hash : Hash(s.vs->program.data(), s.vs->program.size() * 4);
                 vs_hash = Hash(&prog_h, sizeof(prog_h), uint64_t(supplied_regs) | 0x5653505200000000ull);
@@ -606,55 +684,47 @@ public:
             ps_hash = 0;
         }
 
-        std::vector<MetalVertex> verts(a.vertex_count);
+        scratch_verts_.resize(a.vertex_count);
+        MetalVertex* verts = scratch_verts_.data();
         const float inv_w = 2.0f / float(target_w);
         const float inv_h = 2.0f / float(target_h);
+        const bool need_fallback_c3 = !use_translated && ((active_mask & (1u << 3)) == 0);
+        const bool need_fallback_t9 = !use_translated && ((active_mask & (1u << 9)) == 0);
 
         for (uint32_t i = 0; i < a.vertex_count; ++i) {
             float p[4] = {};
-            if (!read_attr(0, i, p)) return;
+            if (!ReadReg(pos_src, i, has_conv, conv_ptr, reg_count, p)) return;
+            MetalVertex& dst = verts[i];
             if (use_translated) {
-                // Translated HLSL->MSL vertex shaders expect raw guest positions (fixed or programmable)
-                verts[i].v[0][0] = p[0];
-                verts[i].v[0][1] = p[1];
-                verts[i].v[0][2] = p[2];
-                verts[i].v[0][3] = (p[3] != 0.0f) ? p[3] : 1.0f;
+                dst.v[0][0] = p[0];
+                dst.v[0][1] = p[1];
+                dst.v[0][2] = p[2];
+                dst.v[0][3] = (p[3] != 0.0f) ? p[3] : 1.0f;
             } else if (a.pretransformed) {
-                verts[i].v[0][0] = p[0] * inv_w - 1.0f;
-                verts[i].v[0][1] = 1.0f - p[1] * inv_h;
-                verts[i].v[0][2] = p[2];
-                verts[i].v[0][3] = 1.0f;
+                dst.v[0][0] = p[0] * inv_w - 1.0f;
+                dst.v[0][1] = 1.0f - p[1] * inv_h;
+                dst.v[0][2] = p[2];
+                dst.v[0][3] = 1.0f;
             } else {
                 p[3] = (p[3] != 0.0f) ? p[3] : 1.0f;
                 float wv[4], vv[4], pv[4];
                 MulMat4Vec4(s.transforms[256].data(), p, wv);
                 MulMat4Vec4(s.transforms[2].data(), wv, vv);
                 MulMat4Vec4(s.transforms[3].data(), vv, pv);
-                verts[i].v[0][0] = pv[0];
-                verts[i].v[0][1] = pv[1];
-                verts[i].v[0][2] = pv[2];
-                verts[i].v[0][3] = pv[3];
+                dst.v[0][0] = pv[0];
+                dst.v[0][1] = pv[1];
+                dst.v[0][2] = pv[2];
+                dst.v[0][3] = pv[3];
             }
 
-            for (int r = 1; r < 16; ++r) {
-                if (!read_attr(r, i, verts[i].v[r])) {
-                    if (r == 3) {
-                        verts[i].v[r][0] = verts[i].v[r][1] = verts[i].v[r][2] = verts[i].v[r][3] = 1.0f;
-                    } else if (r == 2) {
-                        verts[i].v[r][0] = 0.0f;
-                        verts[i].v[r][1] = 0.0f;
-                        verts[i].v[r][2] = 1.0f;
-                        verts[i].v[r][3] = 0.0f;
-                    } else if (r == 4) {
-                        verts[i].v[r][0] = verts[i].v[r][1] = verts[i].v[r][2] = verts[i].v[r][3] = 0.0f;
-                    } else {
-                        verts[i].v[r][0] = 0.0f;
-                        verts[i].v[r][1] = 0.0f;
-                        verts[i].v[r][2] = 0.0f;
-                        verts[i].v[r][3] = 1.0f;
-                    }
+            for (int k = 0; k < active_count; ++k) {
+                const RegSrc& rs = active_regs[k];
+                if (!ReadReg(rs, i, has_conv, conv_ptr, reg_count, dst.v[rs.reg])) {
+                    DefaultReg(rs.reg, dst.v[rs.reg]);
                 }
             }
+            if (need_fallback_c3) DefaultReg(3, dst.v[3]);
+            if (need_fallback_t9) DefaultReg(9, dst.v[9]);
         }
 
         if (!EnsureEncoderFor(rt_va, zs_va, target_w, target_h)) return;
@@ -681,10 +751,17 @@ public:
         sx1 = std::clamp<int32_t>(sx1, 0, int32_t(target_w));
         sy1 = std::clamp<int32_t>(sy1, 0, int32_t(target_h));
         if (sx1 <= sx0 || sy1 <= sy0) return;
-        [encoder_ setScissorRect:MTLScissorRect{
+        const MTLScissorRect sc{
             NSUInteger(sx0), NSUInteger(sy0),
             NSUInteger(sx1 - sx0), NSUInteger(sy1 - sy0)
-        }];
+        };
+        if (!bound_scissor_valid_ ||
+            sc.x != bound_scissor_.x || sc.y != bound_scissor_.y ||
+            sc.width != bound_scissor_.width || sc.height != bound_scissor_.height) {
+            [encoder_ setScissorRect:sc];
+            bound_scissor_ = sc;
+            bound_scissor_valid_ = true;
+        }
 
         const uint32_t cw_raw = s.simple[kMColorWriteEnable / 4];
         const MTLColorWriteMask write_mask = s.rt.header
@@ -699,109 +776,146 @@ public:
         const uint32_t z_fn = s.simple[kMZFunc / 4];
         id<MTLDepthStencilState> dss = GetDepthStencil(z_en, z_wr, z_fn);
 
-        const size_t vb_bytes = verts.size() * sizeof(MetalVertex);
+        const size_t vb_bytes = size_t(a.vertex_count) * sizeof(MetalVertex);
         id<MTLBuffer> vb = nil;
-        if (vb_bytes > 4096) {
-            vb = [device_ newBufferWithBytes:verts.data()
-                                      length:vb_bytes
-                                     options:MTLResourceStorageModeShared];
-            if (!vb) return;
-        }
+        NSUInteger vb_off = 0;
+        if (!AllocateRing(verts, vb_bytes, 16, vb, vb_off)) return;
 
-        [encoder_ setRenderPipelineState:pso];
-        if (dss) [encoder_ setDepthStencilState:dss];
+        if (pso != bound_pso_) {
+            [encoder_ setRenderPipelineState:pso];
+            bound_pso_ = pso;
+        }
+        if (dss && dss != bound_dss_) {
+            [encoder_ setDepthStencilState:dss];
+            bound_dss_ = dss;
+        }
         if (blend_on) {
             const uint32_t bc = s.simple[kMBlendColor / 4];
-            [encoder_ setBlendColorRed:((bc >> 16) & 0xFF) / 255.0f
-                                 green:((bc >> 8) & 0xFF) / 255.0f
-                                  blue:(bc & 0xFF) / 255.0f
-                                 alpha:((bc >> 24) & 0xFF) / 255.0f];
+            if (!bound_blend_color_valid_ || bc != bound_blend_color_) {
+                [encoder_ setBlendColorRed:((bc >> 16) & 0xFF) * (1.0f / 255.0f)
+                                     green:((bc >> 8) & 0xFF) * (1.0f / 255.0f)
+                                      blue:(bc & 0xFF) * (1.0f / 255.0f)
+                                     alpha:((bc >> 24) & 0xFF) * (1.0f / 255.0f)];
+                bound_blend_color_ = bc;
+                bound_blend_color_valid_ = true;
+            }
         }
         for (int t = 0; t < 4; ++t) {
-            [encoder_ setFragmentTexture:stage_tex[t] atIndex:t];
-            [encoder_ setFragmentSamplerState:stage_smp[t] atIndex:t];
+            if (stage_tex[t] != bound_tex_[t]) {
+                [encoder_ setFragmentTexture:stage_tex[t] atIndex:t];
+                bound_tex_[t] = stage_tex[t];
+            }
+            if (stage_smp[t] != bound_smp_[t]) {
+                [encoder_ setFragmentSamplerState:stage_smp[t] atIndex:t];
+                bound_smp_[t] = stage_smp[t];
+            }
         }
-        if (vb) {
-            [encoder_ setVertexBuffer:vb offset:0 atIndex:0];
+        if (vb == bound_vs_buf0_) {
+            [encoder_ setVertexBufferOffset:vb_off atIndex:0];
         } else {
-            [encoder_ setVertexBytes:verts.data() length:vb_bytes atIndex:0];
+            [encoder_ setVertexBuffer:vb offset:vb_off atIndex:0];
+            bound_vs_buf0_ = vb;
         }
 
         if (use_translated) {
             DrawConstants dc{};
-            FillDrawConstants(s, fk, dc, tex_dims, target_w, target_h);
-            [encoder_ setVertexBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
-            [encoder_ setVertexBytes:&dc length:sizeof(dc) atIndex:17];
-            [encoder_ setFragmentBytes:s.vsc.data() length:sizeof(s.vsc) atIndex:16];
-            [encoder_ setFragmentBytes:&dc length:sizeof(dc) atIndex:17];
+            FillDrawConstants(s, fk, dc, tex_dims, target_w, target_h, is_prog_vs, a.pretransformed);
+            id<MTLBuffer> dc_buf = nil;
+            NSUInteger dc_off = 0;
+            if (!AllocateRing(&dc, sizeof(dc), 256, dc_buf, dc_off)) return;
+            if (dc_buf == bound_vs_buf17_) {
+                [encoder_ setVertexBufferOffset:dc_off atIndex:17];
+            } else {
+                [encoder_ setVertexBuffer:dc_buf offset:dc_off atIndex:17];
+                bound_vs_buf17_ = dc_buf;
+            }
+            if (dc_buf == bound_fs_buf17_) {
+                [encoder_ setFragmentBufferOffset:dc_off atIndex:17];
+            } else {
+                [encoder_ setFragmentBuffer:dc_buf offset:dc_off atIndex:17];
+                bound_fs_buf17_ = dc_buf;
+            }
+
+            // Fragment shaders never read vc.c (vsc_dummy_buf_ stays bound at fragment buffer 16),
+            // and fixed-function vertex shaders never read vc.c either. Only upload s.vsc for
+            // programmable vertex shaders, and skip the upload when constants are unchanged.
+            if (is_prog_vs) {
+                if (!bound_vsc_valid_ || std::memcmp(s.vsc.data(), bound_vsc_.data(), sizeof(s.vsc)) != 0) {
+                    id<MTLBuffer> vc_buf = nil;
+                    NSUInteger vc_off = 0;
+                    if (!AllocateRing(s.vsc.data(), sizeof(s.vsc), 256, vc_buf, vc_off)) return;
+                    if (vc_buf == bound_vs_buf16_) {
+                        [encoder_ setVertexBufferOffset:vc_off atIndex:16];
+                    } else {
+                        [encoder_ setVertexBuffer:vc_buf offset:vc_off atIndex:16];
+                        bound_vs_buf16_ = vc_buf;
+                    }
+                    std::memcpy(bound_vsc_.data(), s.vsc.data(), sizeof(s.vsc));
+                    bound_vsc_valid_ = true;
+                }
+            }
         }
 
         const MTLPrimitiveType mtl_prim = ToMetalPrimitive(a.topology, a.strip);
         if (a.index_count > 0 && !a.indices.empty()) {
             const uint32_t* idx_ptr = a.indices.data();
-            std::vector<uint32_t> biased32;
             if (a.base_vertex != 0) {
-                biased32.resize(a.index_count);
+                scratch_idx32_.resize(a.index_count);
                 for (uint32_t k = 0; k < a.index_count; ++k) {
                     int64_t v = int64_t(a.indices[k]) + int64_t(a.base_vertex);
-                    biased32[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
+                    scratch_idx32_[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
                 }
-                idx_ptr = biased32.data();
+                idx_ptr = scratch_idx32_.data();
             }
-            id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
-                                                   length:size_t(a.index_count) * sizeof(uint32_t)
-                                                  options:MTLResourceStorageModeShared];
-            if (ib) {
+            id<MTLBuffer> ib = nil;
+            NSUInteger ib_off = 0;
+            if (AllocateRing(idx_ptr, size_t(a.index_count) * sizeof(uint32_t), 16, ib, ib_off)) {
                 [encoder_ drawIndexedPrimitives:mtl_prim
                                      indexCount:a.index_count
                                       indexType:MTLIndexTypeUInt32
                                     indexBuffer:ib
-                              indexBufferOffset:0];
+                              indexBufferOffset:ib_off];
             }
         } else if (a.index_count > 0 && a.index_src) {
             if (a.index16) {
                 const auto* src16 = static_cast<const uint16_t*>(a.index_src);
                 const uint16_t* idx_ptr = src16;
-                std::vector<uint16_t> biased16;
                 if (a.base_vertex != 0) {
-                    biased16.resize(a.index_count);
+                    scratch_idx16_.resize(a.index_count);
                     for (uint32_t k = 0; k < a.index_count; ++k) {
                         int64_t v = int64_t(src16[k]) + int64_t(a.base_vertex);
-                        biased16[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint16_t(v) : 0u;
+                        scratch_idx16_[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint16_t(v) : 0u;
                     }
-                    idx_ptr = biased16.data();
+                    idx_ptr = scratch_idx16_.data();
                 }
-                id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
-                                                       length:size_t(a.index_count) * sizeof(uint16_t)
-                                                      options:MTLResourceStorageModeShared];
-                if (ib) {
+                id<MTLBuffer> ib = nil;
+                NSUInteger ib_off = 0;
+                if (AllocateRing(idx_ptr, size_t(a.index_count) * sizeof(uint16_t), 16, ib, ib_off)) {
                     [encoder_ drawIndexedPrimitives:mtl_prim
                                          indexCount:a.index_count
                                           indexType:MTLIndexTypeUInt16
                                         indexBuffer:ib
-                                  indexBufferOffset:0];
+                                  indexBufferOffset:ib_off];
                 }
             } else {
                 const auto* src32 = static_cast<const uint32_t*>(a.index_src);
                 const uint32_t* idx_ptr = src32;
-                std::vector<uint32_t> biased32;
                 if (a.base_vertex != 0) {
-                    biased32.resize(a.index_count);
+                    scratch_idx32_.resize(a.index_count);
                     for (uint32_t k = 0; k < a.index_count; ++k) {
                         int64_t v = int64_t(src32[k]) + int64_t(a.base_vertex);
-                        biased32[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
+                        scratch_idx32_[k] = (v >= 0 && v < int64_t(a.vertex_count)) ? uint32_t(v) : 0u;
                     }
-                    idx_ptr = biased32.data();
+                    idx_ptr = scratch_idx32_.data();
                 }
-                id<MTLBuffer> ib = [device_ newBufferWithBytes:idx_ptr
-                                                       length:size_t(a.index_count) * sizeof(uint32_t)
-                                                      options:MTLResourceStorageModeShared];
-                if (ib) {
+                id<MTLBuffer> ib = nil;
+                NSUInteger ib_off = 0;
+                if (AllocateRing(idx_ptr, size_t(a.index_count) * sizeof(uint32_t), 16, ib, ib_off)) {
                     [encoder_ drawIndexedPrimitives:mtl_prim
                                          indexCount:a.index_count
                                           indexType:MTLIndexTypeUInt32
                                         indexBuffer:ib
-                                  indexBufferOffset:0];
+                                  indexBufferOffset:ib_off];
                 }
             }
         } else if (a.draw_count > 0) {
@@ -902,14 +1016,23 @@ public:
                 last_cmd_buf_ = cmd_buf_;
                 cmd_buf_ = nil;
             }
+            g_presented_frames.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
-    void Sync(uint32_t, uint32_t) override { Flush(); }
-    void SyncLate(uint32_t) override { Flush(); }
+    // Avoid stalling the CPU on GPU completion for resource-busy hints; Metal textures are
+    // copied synchronously on upload and the transient ring is synchronized per frame.
+    void Sync(uint32_t, uint32_t) override {}
+    void SyncLate(uint32_t) override {}
 
     void Flush() override {
         @autoreleasepool {
+            EndEncoder();
+            if (cmd_buf_) {
+                [cmd_buf_ commit];
+                last_cmd_buf_ = cmd_buf_;
+                cmd_buf_ = nil;
+            }
             if (last_cmd_buf_) {
                 [last_cmd_buf_ waitUntilCompleted];
                 last_cmd_buf_ = nil;
@@ -939,18 +1062,20 @@ private:
     id<MTLFunction> GetOrCompileFunction(uint64_t hash, const std::string& msl, NSString* entry,
                                          std::unordered_map<uint64_t, id<MTLFunction>>& cache) {
         if (auto it = cache.find(hash); it != cache.end()) return it->second;
-        NSError* err = nil;
-        id<MTLLibrary> lib = [device_ newLibraryWithSource:@(msl.c_str()) options:nil error:&err];
-        if (!lib) {
-            if (failed_shaders_.insert(hash).second) {
-                LOGE("metal: MSL compile failed (%s): %s", [entry UTF8String], [[err localizedDescription] UTF8String]);
+        @autoreleasepool {
+            NSError* err = nil;
+            id<MTLLibrary> lib = [device_ newLibraryWithSource:@(msl.c_str()) options:nil error:&err];
+            if (!lib) {
+                if (failed_shaders_.insert(hash).second) {
+                    LOGE("metal: MSL compile failed (%s): %s", [entry UTF8String], [[err localizedDescription] UTF8String]);
+                }
+                cache[hash] = nil;
+                return nil;
             }
-            cache[hash] = nil;
-            return nil;
+            id<MTLFunction> fn = [lib newFunctionWithName:entry];
+            cache[hash] = fn;
+            return fn;
         }
-        id<MTLFunction> fn = [lib newFunctionWithName:entry];
-        cache[hash] = fn;
-        return fn;
     }
 
     static void MulMat4(const float a[16], const float b[16], float out[16]) {
@@ -990,7 +1115,7 @@ private:
     }
 
     void FillDrawConstants(const State& s, const FixedKey& fk, DrawConstants& dc, const float tex_dims[4][2],
-                           uint32_t target_w, uint32_t target_h) {
+                           uint32_t target_w, uint32_t target_h, bool is_prog_vs, bool pretransformed) {
         const float gw = float(target_w ? target_w : guest_width_);
         const float gh = float(target_h ? target_h : guest_height_);
         dc.surf[0] = gw;
@@ -1003,9 +1128,8 @@ private:
             std::memcpy(&f, &u, 4);
             return f;
         };
-        const bool vertex_prog = (s.vs && !s.vs->program.empty());
         if (s.rs[kRsFogEnable]) {
-            if (vertex_prog && s.rs[kRsFogTableMode] == 0) {
+            if (is_prog_vs && s.rs[kRsFogTableMode] == 0) {
                 dc.fog[0] = 1.0f;
                 dc.fog[1] = 0.0f;
                 dc.fog[2] = 0.0f;
@@ -1019,10 +1143,10 @@ private:
         }
 
         auto unpack_c = [](uint32_t v, float out[4]) {
-            out[0] = ((v >> 16) & 0xFF) / 255.0f;
-            out[1] = ((v >> 8) & 0xFF) / 255.0f;
-            out[2] = (v & 0xFF) / 255.0f;
-            out[3] = ((v >> 24) & 0xFF) / 255.0f;
+            out[0] = ((v >> 16) & 0xFF) * (1.0f / 255.0f);
+            out[1] = ((v >> 8) & 0xFF) * (1.0f / 255.0f);
+            out[2] = (v & 0xFF) * (1.0f / 255.0f);
+            out[3] = ((v >> 24) & 0xFF) * (1.0f / 255.0f);
         };
         unpack_c(s.rs[kRsFogColor], dc.fog_color);
 
@@ -1040,30 +1164,7 @@ private:
         unpack_c(s.simple[kMPsFinalConstant0 / 4], dc.pc[16]);
         unpack_c(s.simple[kMPsFinalConstant1 / 4], dc.pc[17]);
 
-        float wv[16], wvp[16], full[16], n[16] = {};
-        MulMat4(s.transforms[256].data(), s.transforms[2].data(), wv);
-        MulMat4(wv, s.transforms[3].data(), wvp);
-        const auto& vp = s.viewport;
-        const float vw = vp.w ? float(vp.w) : gw;
-        const float vh = vp.h ? float(vp.h) : gh;
-        const float sx = vw / gw;
-        const float sy = vh / gh;
-        const float ox = (2.0f * vp.x + vw) / gw - 1.0f;
-        const float oy = 1.0f - (2.0f * vp.y + vh) / gh;
-        const float vpm[16] = {
-            sx, 0,  0,                  0,
-            0,  sy, 0,                  0,
-            0,  0,  vp.max_z - vp.min_z, 0,
-            ox, oy, vp.min_z,           1
-        };
-        MulMat4(wvp, vpm, full);
-        TransposeMat4(full, dc.wvp);
-        TransposeMat4(wv, dc.wv);
-        InverseTranspose3x3(wv, n);
-        TransposeMat4(n, dc.wvn);
-
         for (int t = 0; t < 4; ++t) {
-            TransposeMat4(s.transforms[16 + t].data(), dc.tm[t]);
             dc.texsize[t][0] = tex_dims[t][0];
             dc.texsize[t][1] = tex_dims[t][1];
             const auto& ts = s.tss[size_t(t)];
@@ -1075,32 +1176,67 @@ private:
             dc.bumpl[t][1] = f32(ts[kTssBumpEnvLOffset]);
         }
 
-        std::memcpy(dc.mat, s.material.data(), sizeof(float) * 16);
-        dc.mat[4][0] = s.material[16];
-        unpack_c(s.rs[kRsAmbient], dc.amb);
-        const float* vm = s.transforms[2].data();
-        for (int i = 0; i < 8; ++i) {
-            if (!((fk.types >> (i * 2)) & 3)) continue;
-            float f[26];
-            std::memcpy(f, s.lights[size_t(i)].data(), sizeof(f));
-            for (int j = 0; j < 4; ++j) {
-                dc.lt[i][0][j] = f[1 + j];
-                dc.lt[i][1][j] = f[5 + j];
-                dc.lt[i][2][j] = f[9 + j];
+        // Programmable vertex shaders use vc.c[0..191] instead of fixed-function matrices & lights.
+        if (is_prog_vs) return;
+
+        if (!pretransformed) {
+            float wv[16], wvp[16], full[16], n[16] = {};
+            MulMat4(s.transforms[256].data(), s.transforms[2].data(), wv);
+            MulMat4(wv, s.transforms[3].data(), wvp);
+            const auto& vp = s.viewport;
+            const float vw = vp.w ? float(vp.w) : gw;
+            const float vh = vp.h ? float(vp.h) : gh;
+            const float sx = vw / gw;
+            const float sy = vh / gh;
+            const float ox = (2.0f * vp.x + vw) / gw - 1.0f;
+            const float oy = 1.0f - (2.0f * vp.y + vh) / gh;
+            const float vpm[16] = {
+                sx, 0,  0,                  0,
+                0,  sy, 0,                  0,
+                0,  0,  vp.max_z - vp.min_z, 0,
+                ox, oy, vp.min_z,           1
+            };
+            MulMat4(wvp, vpm, full);
+            TransposeMat4(full, dc.wvp);
+            TransposeMat4(wv, dc.wv);
+            InverseTranspose3x3(wv, n);
+            TransposeMat4(n, dc.wvn);
+        }
+
+        for (int t = 0; t < 4; ++t) {
+            if ((fk.tex[t] >> 8) & 7u) {
+                TransposeMat4(s.transforms[16 + t].data(), dc.tm[t]);
             }
-            const float* pos = f + 13;
-            const float* dir = f + 16;
-            for (int j = 0; j < 3; ++j) {
-                dc.lt[i][3][j] = pos[0] * vm[j] + pos[1] * vm[4 + j] + pos[2] * vm[8 + j] + vm[12 + j];
-                dc.lt[i][4][j] = dir[0] * vm[j] + dir[1] * vm[4 + j] + dir[2] * vm[8 + j];
+        }
+
+        if (fk.light & 1u) {
+            std::memcpy(dc.mat, s.material.data(), sizeof(float) * 16);
+            dc.mat[4][0] = s.material[16];
+            unpack_c(s.rs[kRsAmbient], dc.amb);
+            const float* vm = s.transforms[2].data();
+            for (int i = 0; i < 8; ++i) {
+                if (!((fk.types >> (i * 2)) & 3)) continue;
+                float f[26];
+                std::memcpy(f, s.lights[size_t(i)].data(), sizeof(f));
+                for (int j = 0; j < 4; ++j) {
+                    dc.lt[i][0][j] = f[1 + j];
+                    dc.lt[i][1][j] = f[5 + j];
+                    dc.lt[i][2][j] = f[9 + j];
+                }
+                const float* pos = f + 13;
+                const float* dir = f + 16;
+                for (int j = 0; j < 3; ++j) {
+                    dc.lt[i][3][j] = pos[0] * vm[j] + pos[1] * vm[4 + j] + pos[2] * vm[8 + j] + vm[12 + j];
+                    dc.lt[i][4][j] = dir[0] * vm[j] + dir[1] * vm[4 + j] + dir[2] * vm[8 + j];
+                }
+                dc.lt[i][3][3] = f[19];
+                dc.lt[i][4][3] = f[20];
+                dc.lt[i][5][0] = f[21];
+                dc.lt[i][5][1] = f[22];
+                dc.lt[i][5][2] = f[23];
+                dc.lt[i][6][0] = std::cos(f[24] * 0.5f);
+                dc.lt[i][6][1] = std::cos(f[25] * 0.5f);
             }
-            dc.lt[i][3][3] = f[19];
-            dc.lt[i][4][3] = f[20];
-            dc.lt[i][5][0] = f[21];
-            dc.lt[i][5][1] = f[22];
-            dc.lt[i][5][2] = f[23];
-            dc.lt[i][6][0] = std::cos(f[24] * 0.5f);
-            dc.lt[i][6][1] = std::cos(f[25] * 0.5f);
         }
     }
 
@@ -1116,31 +1252,33 @@ private:
         const uint64_t key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull) ^ (state_bits * 0xBF58476D1CE4E5B9ull);
         if (auto it = pso_cache_.find(key); it != pso_cache_.end()) return it->second;
 
-        MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
-        desc.vertexFunction = vs;
-        desc.fragmentFunction = fs;
-        desc.vertexDescriptor = vertex_desc_;
-        desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-        desc.colorAttachments[0].writeMask = write_mask;
-        desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
-        if (blend) {
-            const MTLBlendOperation op = ToMetalBlendOp(blend_op);
-            desc.colorAttachments[0].blendingEnabled = YES;
-            desc.colorAttachments[0].rgbBlendOperation = op;
-            desc.colorAttachments[0].alphaBlendOperation = op;
-            desc.colorAttachments[0].sourceRGBBlendFactor = ToMetalBlend(src_b, false);
-            desc.colorAttachments[0].destinationRGBBlendFactor = ToMetalBlend(dst_b, false);
-            desc.colorAttachments[0].sourceAlphaBlendFactor = ToMetalBlend(src_b, true);
-            desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, true);
+        @autoreleasepool {
+            MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+            desc.vertexFunction = vs;
+            desc.fragmentFunction = fs;
+            desc.vertexDescriptor = vertex_desc_;
+            desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+            desc.colorAttachments[0].writeMask = write_mask;
+            desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+            if (blend) {
+                const MTLBlendOperation op = ToMetalBlendOp(blend_op);
+                desc.colorAttachments[0].blendingEnabled = YES;
+                desc.colorAttachments[0].rgbBlendOperation = op;
+                desc.colorAttachments[0].alphaBlendOperation = op;
+                desc.colorAttachments[0].sourceRGBBlendFactor = ToMetalBlend(src_b, false);
+                desc.colorAttachments[0].destinationRGBBlendFactor = ToMetalBlend(dst_b, false);
+                desc.colorAttachments[0].sourceAlphaBlendFactor = ToMetalBlend(src_b, true);
+                desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, true);
+            }
+            NSError* err = nil;
+            id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
+            if (!pso) {
+                LOGE("metal: pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
+                return nil;
+            }
+            pso_cache_[key] = pso;
+            return pso;
         }
-        NSError* err = nil;
-        id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
-        if (!pso) {
-            LOGE("metal: pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
-            return nil;
-        }
-        pso_cache_[key] = pso;
-        return pso;
     }
 
     id<MTLRenderPipelineState> GetClearPipeline(uint32_t mask, bool with_depth) {
@@ -1172,12 +1310,14 @@ private:
         const uint32_t key = (uint32_t(z_en) << 17) | (uint32_t(z_wr) << 16) | (z_fn & 0xFFFF);
         if (auto it = dss_cache_.find(key); it != dss_cache_.end()) return it->second;
 
-        MTLDepthStencilDescriptor* desc = [[MTLDepthStencilDescriptor alloc] init];
-        desc.depthCompareFunction = z_en ? ToMetalCompare(z_fn) : MTLCompareFunctionAlways;
-        desc.depthWriteEnabled = (z_en && z_wr) ? YES : NO;
-        id<MTLDepthStencilState> dss = [device_ newDepthStencilStateWithDescriptor:desc];
-        dss_cache_[key] = dss;
-        return dss;
+        @autoreleasepool {
+            MTLDepthStencilDescriptor* desc = [[MTLDepthStencilDescriptor alloc] init];
+            desc.depthCompareFunction = z_en ? ToMetalCompare(z_fn) : MTLCompareFunctionAlways;
+            desc.depthWriteEnabled = (z_en && z_wr) ? YES : NO;
+            id<MTLDepthStencilState> dss = [device_ newDepthStencilStateWithDescriptor:desc];
+            dss_cache_[key] = dss;
+            return dss;
+        }
     }
 
     static void DecompressBcBlockColor(const uint8_t* blk, uint8_t c[4][4], bool bc1_alpha) {
@@ -1321,19 +1461,67 @@ private:
         return dt;
     }
 
+    void ResetEncoderState() {
+        bound_pso_ = nil;
+        bound_dss_ = nil;
+        for (int t = 0; t < 4; ++t) {
+            bound_tex_[t] = nil;
+            bound_smp_[t] = nil;
+        }
+        bound_vs_buf0_ = nil;
+        bound_vs_buf16_ = nil;
+        bound_vs_buf17_ = nil;
+        bound_fs_buf17_ = nil;
+        bound_scissor_valid_ = false;
+        bound_blend_color_valid_ = false;
+        bound_vsc_valid_ = false;
+    }
+
+    bool AllocateRing(const void* data, size_t bytes, size_t align, id<MTLBuffer>& out_buf, NSUInteger& out_off) {
+        if (bytes == 0) return false;
+        const size_t mask = align - 1;
+        const size_t aligned = (ring_off_ + mask) & ~mask;
+        if (ring_buf_[ring_idx_] && ring_ptr_[ring_idx_] && aligned + bytes <= kRingSize) {
+            std::memcpy(ring_ptr_[ring_idx_] + aligned, data, bytes);
+            out_buf = ring_buf_[ring_idx_];
+            out_off = NSUInteger(aligned);
+            ring_off_ = aligned + bytes;
+            return true;
+        }
+        out_buf = [device_ newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
+        out_off = 0;
+        return out_buf != nil;
+    }
+
     void EndEncoder() {
         if (encoder_) {
             [encoder_ endEncoding];
             encoder_ = nil;
             active_color_tex_ = nil;
             active_depth_tex_ = nil;
+            ResetEncoderState();
         }
     }
 
     bool EnsureCommandBuffer() {
         if (cmd_buf_) return true;
+        if (frame_sem_) {
+            dispatch_semaphore_wait(frame_sem_, DISPATCH_TIME_FOREVER);
+            ring_idx_ = (ring_idx_ + 1) % kRingCount;
+            ring_off_ = 0;
+        }
         cmd_buf_ = [queue_ commandBuffer];
-        return cmd_buf_ != nil;
+        if (!cmd_buf_) {
+            if (frame_sem_) dispatch_semaphore_signal(frame_sem_);
+            return false;
+        }
+        if (frame_sem_) {
+            dispatch_semaphore_t sem = frame_sem_;
+            [cmd_buf_ addCompletedHandler:^(__unused id<MTLCommandBuffer> cb) {
+                dispatch_semaphore_signal(sem);
+            }];
+        }
+        return true;
     }
 
     void FlushColorClear(ColorTarget& ct) {
@@ -1594,23 +1782,34 @@ private:
         }
         EndEncoder();
         if (!EnsureCommandBuffer()) return false;
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture = ct.tex;
-        pass.colorAttachments[0].loadAction = ct.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
-        pass.colorAttachments[0].clearColor = ct.clear_color;
-        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        pass.depthAttachment.texture = dt.tex;
-        pass.depthAttachment.loadAction = dt.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
-        pass.depthAttachment.clearDepth = dt.clear_depth;
-        pass.depthAttachment.storeAction = MTLStoreActionStore;
-        encoder_ = [cmd_buf_ renderCommandEncoderWithDescriptor:pass];
+        @autoreleasepool {
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = ct.tex;
+            pass.colorAttachments[0].loadAction = ct.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
+            pass.colorAttachments[0].clearColor = ct.clear_color;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            pass.depthAttachment.texture = dt.tex;
+            pass.depthAttachment.loadAction = dt.pending_clear ? MTLLoadActionClear : MTLLoadActionLoad;
+            pass.depthAttachment.clearDepth = dt.clear_depth;
+            pass.depthAttachment.storeAction = MTLStoreActionStore;
+            encoder_ = [cmd_buf_ renderCommandEncoderWithDescriptor:pass];
+        }
         if (!encoder_) return false;
         active_color_tex_ = ct.tex;
         active_depth_tex_ = dt.tex;
         ct.pending_clear = false;
         dt.pending_clear = false;
+        ResetEncoderState();
+        if (vsc_dummy_buf_) {
+            [encoder_ setVertexBuffer:vsc_dummy_buf_ offset:0 atIndex:16];
+            [encoder_ setFragmentBuffer:vsc_dummy_buf_ offset:0 atIndex:16];
+            bound_vs_buf16_ = vsc_dummy_buf_;
+        }
         return true;
     }
+
+    static constexpr uint32_t kRingCount = 3;
+    static constexpr size_t kRingSize = 8 * 1024 * 1024;
 
     uint32_t guest_width_ = 640;
     uint32_t guest_height_ = 480;
@@ -1641,6 +1840,31 @@ private:
     std::unordered_map<uint32_t, id<MTLDepthStencilState>> dss_cache_;
     std::unordered_map<uint64_t, CachedTex> tex_cache_;
 
+    dispatch_semaphore_t frame_sem_ = nil;
+    id<MTLBuffer> ring_buf_[kRingCount] = {};
+    uint8_t* ring_ptr_[kRingCount] = {};
+    uint32_t ring_idx_ = 0;
+    size_t ring_off_ = 0;
+    id<MTLBuffer> vsc_dummy_buf_ = nil;
+    std::vector<MetalVertex> scratch_verts_;
+    std::vector<uint16_t> scratch_idx16_;
+    std::vector<uint32_t> scratch_idx32_;
+
+    id<MTLRenderPipelineState> bound_pso_ = nil;
+    id<MTLDepthStencilState> bound_dss_ = nil;
+    id<MTLTexture> bound_tex_[4] = {};
+    id<MTLSamplerState> bound_smp_[4] = {};
+    id<MTLBuffer> bound_vs_buf0_ = nil;
+    id<MTLBuffer> bound_vs_buf16_ = nil;
+    id<MTLBuffer> bound_vs_buf17_ = nil;
+    id<MTLBuffer> bound_fs_buf17_ = nil;
+    MTLScissorRect bound_scissor_{0, 0, 0, 0};
+    bool bound_scissor_valid_ = false;
+    uint32_t bound_blend_color_ = 0;
+    bool bound_blend_color_valid_ = false;
+    std::array<float, 192 * 4> bound_vsc_{};
+    bool bound_vsc_valid_ = false;
+
     id<MTLCommandBuffer> cmd_buf_ = nil;
     id<MTLRenderCommandEncoder> encoder_ = nil;
     id<MTLTexture> active_color_tex_ = nil;
@@ -1652,6 +1876,10 @@ private:
 
 void SetMetalLayer(void* ca_metal_layer) {
     g_metal_layer = (__bridge CAMetalLayer*)ca_metal_layer;
+}
+
+uint32_t PresentedFrameCount() {
+    return g_presented_frames.load(std::memory_order_relaxed);
 }
 
 std::unique_ptr<Backend> CreateBackend() {

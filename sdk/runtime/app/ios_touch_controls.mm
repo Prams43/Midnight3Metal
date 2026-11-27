@@ -9,6 +9,7 @@
 
 #include "app/ios_touch_controls.h"
 #include "core/input.h"
+#include "gpu/metal.h"
 
 namespace {
 
@@ -96,6 +97,7 @@ constexpr CGFloat kStickDeadzone = 0.05;
 constexpr CGFloat kSteerToggleX = 0.498;
 constexpr CGFloat kModeToggleDrivingX = 0.575;
 constexpr CGFloat kModeToggleMenuX = 0.590;
+constexpr CGFloat kFpsPillX = 0.670;
 constexpr CGFloat kTopBarY = 0.095;
 
 void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloat height, CGFloat radius) {
@@ -308,7 +310,10 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     UIButton* _steerToggleButton;
     UIButton* _toMenuButton;
     UIButton* _toDrivingButton;
+    UILabel* _fpsLabel;
     NSTimer* _modeTimer;
+    double _fpsLastTime;
+    uint32_t _fpsLastFrames;
     UiMode _lastAutoMode;
     UiMode _activeMode;
     BOOL _manualOverride;
@@ -406,6 +411,24 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
     _toDrivingButton = [self makeUtilityButtonWithTitle:@"DRIVE" width:58 height:34 action:@selector(toggleManualMode:)];
     [_menuContainer addSubview:_toDrivingButton];
 
+    // Live FPS counter pill (non-interactive, visible in both Driving and Menu modes)
+    _fpsLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 62, 24)];
+    _fpsLabel.text = @"-- FPS";
+    _fpsLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightBold];
+    _fpsLabel.textColor = [UIColor colorWithRed:0.35 green:0.98 blue:0.55 alpha:1.0];
+    _fpsLabel.textAlignment = NSTextAlignmentCenter;
+    _fpsLabel.backgroundColor = [UIColor colorWithRed:0.04 green:0.06 blue:0.09 alpha:0.52];
+    _fpsLabel.layer.cornerRadius = 9.0;
+    _fpsLabel.layer.masksToBounds = YES;
+    _fpsLabel.layer.borderWidth = 1.0;
+    _fpsLabel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.28].CGColor;
+    _fpsLabel.userInteractionEnabled = NO;
+    _fpsLabel.autoresizingMask = UIViewAutoresizingNone;
+    [self addSubview:_fpsLabel];
+
+    _fpsLastTime = CACurrentMediaTime();
+    _fpsLastFrames = gpu::PresentedFrameCount();
+
     _lastAutoMode = input::GetUiMode();
     _activeMode = _lastAutoMode;
     _manualOverride = NO;
@@ -448,6 +471,24 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
 }
 
 - (void)syncGameUiMode {
+    const double now = CACurrentMediaTime();
+    const double elapsed = now - _fpsLastTime;
+    if (elapsed >= 0.45) {
+        const uint32_t frames = gpu::PresentedFrameCount();
+        const uint32_t delta = frames - _fpsLastFrames;
+        const double fps = static_cast<double>(delta) / elapsed;
+        _fpsLastTime = now;
+        _fpsLastFrames = frames;
+        _fpsLabel.text = [NSString stringWithFormat:@"%.0f FPS", fps];
+        if (fps >= 50.0) {
+            _fpsLabel.textColor = [UIColor colorWithRed:0.35 green:0.98 blue:0.55 alpha:1.0];
+        } else if (fps >= 30.0) {
+            _fpsLabel.textColor = [UIColor colorWithRed:1.0 green:0.80 blue:0.25 alpha:1.0];
+        } else {
+            _fpsLabel.textColor = [UIColor colorWithRed:1.0 green:0.38 blue:0.38 alpha:1.0];
+        }
+    }
+
     const UiMode autoMode = input::GetUiMode();
     if (autoMode != _lastAutoMode) {
         _lastAutoMode = autoMode;
@@ -509,6 +550,7 @@ void ApplyButtonStyle(UIButton* button, ButtonStyle style, CGFloat width, CGFloa
         _menuButtons[i].center = CGPointMake(x0 + w * spec.x, y0 + h * spec.y);
     }
     _toDrivingButton.center = CGPointMake(x0 + w * kModeToggleMenuX, y0 + h * kTopBarY);
+    _fpsLabel.center = CGPointMake(x0 + w * kFpsPillX, y0 + h * kTopBarY);
 }
 
 - (void)controlDown:(UIButton*)sender {

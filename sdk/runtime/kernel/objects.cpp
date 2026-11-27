@@ -381,7 +381,8 @@ static void TimerLoop() {
         if (auto t = e.apc_thread.lock(); t && e.apc_routine)
             QueueApc(*t, e.apc_routine, e.apc_context, uint32_t(Now100ns()), uint32_t(Now100ns() >> 32));
         if (e.period_ms > 0) {
-            e.deadline += int64_t(e.period_ms) * 1000000;
+            const int64_t next_deadline = e.deadline + int64_t(e.period_ms) * 1000000;
+            e.deadline = next_deadline > now ? next_deadline : now + int64_t(e.period_ms) * 1000000;
             g_timers.push(e);
         } else {
             g_timer_seq.erase(e.timer.get());

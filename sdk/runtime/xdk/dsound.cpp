@@ -611,20 +611,26 @@ void Start() {
     g_started = true;
     OpenDump();
     audio::StartOutput(Render);
-    // for a title that never calls DirectSoundDoWork: its callbacks come from here instead
+    // for a title that never calls DirectSoundDoWork: its callbacks come from here instead.
+    // Once a title has called DirectSoundDoWork at least once (g_pumped != 0), never run its
+    // callbacks on this background thread: during multi-second loading screens that would race
+    // with the title's own stream teardown and re-queue packets into flushed music streams.
     StartHostThread("dsound", [](X86Context& ctx) {
         constexpr int64_t kPumpMs = 250;
-        int64_t traced = NowMs();
+        const int64_t started_ms = NowMs();
+        int64_t traced = started_ms;
         for (;;) {
             std::vector<Done> done;
             {
                 std::unique_lock<std::recursive_mutex> lock(g_lock);
                 g_done_cv.wait_for(lock, std::chrono::milliseconds(50));
-                if (g_trace && NowMs() - traced >= kTraceMs) {
-                    traced = NowMs();
+                const int64_t now = NowMs();
+                if (g_trace && now - traced >= kTraceMs) {
+                    traced = now;
                     LogTrace();
                 }
-                if (NowMs() - g_pumped < kPumpMs) continue;
+                if (g_pumped.load(std::memory_order_relaxed) != 0) continue;
+                if (now - started_ms < kPumpMs) continue;
                 done.assign(g_done.begin(), g_done.end());
                 g_done.clear();
             }
@@ -1181,18 +1187,23 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
     }                                                           \
     static uint32_t str_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
 
-// the stream's callbacks still queued and those of its flushed packets, in order, go to the calling thread
-static void FlushStream(Voice& v) {
+// Flushes pending packets on a stream with E_ABORT (kFlushed).
+// When async_cb is false (synchronous Flush/Release/SetFormat), queued callbacks for this stream are moved
+// to t_flushed and run before the call returns. When async_cb is true (DSSTREAMFLUSHEX_ASYNC), callbacks
+// remain in g_done so DirectSoundDoWork delivers them after the caller finishes updating its stop state.
+static void FlushStream(Voice& v, bool async_cb = false) {
     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
     v.packets.clear();
     v.pos = 0;
-    for (auto it = g_done.begin(); it != g_done.end();) {
-        if (it->voice != v.obj) {
-            ++it;
-            continue;
+    if (!async_cb) {
+        for (auto it = g_done.begin(); it != g_done.end();) {
+            if (it->voice != v.obj) {
+                ++it;
+                continue;
+            }
+            t_flushed.push_back(*it);
+            it = g_done.erase(it);
         }
-        t_flushed.push_back(*it);
-        it = g_done.erase(it);
     }
     Deactivate(v);
 }
@@ -1262,6 +1273,7 @@ STREAM(Flush, 1) {
     return 0;
 }
 STREAM(FlushEx, 4) {
+    const bool async_cb = (a[3] & 1u) != 0;  // DSSTREAMFLUSHEX_ASYNC
     if (a[3] && !v.active && v.packets.empty()) {
         bool has_done = false;
         for (const auto& d : g_done) {
@@ -1272,7 +1284,7 @@ STREAM(FlushEx, 4) {
         }
         if (!has_done) return 0;
     }
-    FlushStream(v);
+    FlushStream(v, async_cb);
     return 0;
 }
 STREAM(Pause, 2) {
@@ -1311,9 +1323,10 @@ HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
         Voice* v = Find(a[0]);
         if (!v && a[0] >= 4) v = Find(a[0] - 4);
         static std::atomic<int> logged{0};
-        if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
-            LOGR("dsound: IDirectSoundStream_FlushEx obj=%08X found=%d flags=%X active=%d pkts=%zu",
-                 a[0], v ? 1 : 0, a[3], v ? int(v->active) : -1, v ? v->packets.size() : size_t(0));
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LOGR("dsound: IDirectSoundStream_FlushEx caller=%08X obj=%08X found=%d flags=%X active=%d pkts=%zu creator=%08X",
+                 t_caller, a[0], v ? 1 : 0, a[3], v ? int(v->active) : -1,
+                 v ? v->packets.size() : size_t(0), v ? v->creator : 0u);
         }
         r = v ? str_FlushEx(*v, a) : 0x80004005u;
         flushed.swap(t_flushed);
@@ -1362,3 +1375,37 @@ STREAM(SetPosition, 5) {
 }
 STREAM(SetVelocity, 5) { return 0; }
 STREAM(SetI3DL2Source, 3) { return 0; }
+
+namespace dsound {
+
+// Compact state-transition snapshot of active streams and audible looping buffers.
+void LogActiveVoices(const char* tag) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    uint32_t playing_bufs = 0, active_streams = 0;
+    for (auto& [obj, v] : g_voices) {
+        if (v.stream) {
+            if (v.active || !v.packets.empty()) ++active_streams;
+        } else if (v.playing) {
+            ++playing_bufs;
+        }
+    }
+    LOGR("dsound: [%s] voices=%zu playing_bufs=%u active_streams=%u done_q=%zu",
+         tag ? tag : "?", g_voices.size(), playing_bufs, active_streams, g_done.size());
+    int shown = 0;
+    for (auto& [obj, v] : g_voices) {
+        const bool is_live_stream = v.stream && (v.active || !v.packets.empty());
+        const bool is_live_loop = !v.stream && v.playing && v.looping;
+        if (!is_live_stream && !is_live_loop) continue;
+        float g[2][2];
+        Levels(v, g);
+        const float gain = std::max({g[0][0], g[0][1], g[1][0], g[1][1]});
+        if (!is_live_stream && gain < 0.005f) continue;
+        if (shown++ < 8) {
+            LOGR("dsound:   %s obj=%08X creator=%08X %uch %uHz vol=%dmB gain=%.3f pkts=%zu active=%d paused=%d loop=%d out=%08X",
+                 v.stream ? "stream" : "loopbuf", v.obj, v.creator, v.channels, v.rate, v.vol_mb, gain,
+                 v.packets.size(), int(v.active), int(v.paused), int(v.looping), v.output);
+        }
+    }
+}
+
+}  // namespace dsound
