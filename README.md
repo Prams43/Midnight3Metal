@@ -1,4 +1,4 @@
-# Midnight Club 3: DUB Edition Remix - iOS Static Recompilation Port
+# MidniteMetal
 
 <p align="center">
   <img src="https://img.shields.io/badge/Apple_iOS-arm64-007AFF?style=flat&logo=apple&logoColor=white" alt="Apple iOS arm64" />
@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/game_data-not_included-E11D48?style=flat" alt="Game Data Not Included" />
 </p>
 
-An experimental **iOS (ARM64 / Metal)** port of the original Xbox **Midnight Club 3: DUB Edition Remix** static recompilation project (`mc3-ios-work`).
+**MidniteMetal** is a native **iOS (ARM64 / Metal)** static recompilation port of the original Xbox **Midnight Club 3: DUB Edition Remix**.
 
 Instead of running an x86 emulator or JIT, the original Xbox executable (`default.xbe`) is statically recompiled into portable C++ ahead of time and linked against a native iOS runtime powered by **Apple Metal**, **Audio Queue Services**, and **UIKit** touch/controller input.
 
