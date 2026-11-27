@@ -219,7 +219,6 @@ class MetalBackend final : public Backend {
 public:
     ~MetalBackend() override {
         Flush();
-        SaveBinaryArchive();
         if (frame_sem_) {
             for (uint32_t i = 0; i < kRingCount; ++i) {
                 dispatch_semaphore_wait(frame_sem_, DISPATCH_TIME_FOREVER);
@@ -319,8 +318,6 @@ public:
                 speed_blur_pso_ = [device_ newRenderPipelineStateWithDescriptor:bd error:&err];
             }
         }
-
-        InitBinaryArchive();
 
         // 1x1 white fallback texture for untextured draws, 1x1 transparent black for unrendered RTs
         MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -1256,9 +1253,6 @@ public:
             }
             ++frame_id_;
             g_presented_frames.fetch_add(1, std::memory_order_relaxed);
-            if (archive_dirty_ && frame_id_ >= archive_last_add_frame_ + 180) {
-                SaveBinaryArchive();
-            }
             {
                 std::lock_guard<std::mutex> lk(g_minimap_lock);
                 g_minimap_frame.active = false;
@@ -1566,23 +1560,8 @@ private:
                 desc.colorAttachments[0].sourceAlphaBlendFactor = ToMetalBlend(src_b, true);
                 desc.colorAttachments[0].destinationAlphaBlendFactor = ToMetalBlend(dst_b, true);
             }
-            if (@available(iOS 14.0, macOS 11.0, *)) {
-                if (binary_archive_) {
-                    desc.binaryArchives = @[(id<MTLBinaryArchive>)binary_archive_];
-                }
-            }
             NSError* err = nil;
             id<MTLRenderPipelineState> pso = [device_ newRenderPipelineStateWithDescriptor:desc error:&err];
-            if (pso) {
-                if (@available(iOS 14.0, macOS 11.0, *)) {
-                    if (binary_archive_) {
-                        if ([(id<MTLBinaryArchive>)binary_archive_ addRenderPipelineFunctionsWithDescriptor:desc error:nil]) {
-                            archive_dirty_ = true;
-                            archive_last_add_frame_ = frame_id_;
-                        }
-                    }
-                }
-            }
             hitch::AddMetalCompile(hitch::NowUs() - t0);
             if (!pso) {
                 LOGE("metal: pipeline creation failed: %s", [[err localizedDescription] UTF8String]);
@@ -1793,40 +1772,6 @@ private:
             dt.clear_depth = 1.0;
         }
         return dt;
-    }
-
-    void InitBinaryArchive() {
-        if (@available(iOS 14.0, macOS 11.0, *)) {
-            @autoreleasepool {
-                NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-                NSString* dir = caches.firstObject ?: NSTemporaryDirectory();
-                NSString* path = [dir stringByAppendingPathComponent:@"mc3_metal_pso_v1.metallib"];
-                archive_url_ = [NSURL fileURLWithPath:path];
-                MTLBinaryArchiveDescriptor* bad = [[MTLBinaryArchiveDescriptor alloc] init];
-                if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                    bad.url = archive_url_;
-                }
-                NSError* err = nil;
-                binary_archive_ = [device_ newBinaryArchiveWithDescriptor:bad error:&err];
-                if (!binary_archive_ && bad.url) {
-                    // Existing cache from an older iOS/driver version — recreate cleanly.
-                    bad.url = nil;
-                    binary_archive_ = [device_ newBinaryArchiveWithDescriptor:bad error:&err];
-                }
-            }
-        }
-    }
-
-    void SaveBinaryArchive() {
-        if (!archive_dirty_) return;
-        archive_dirty_ = false;
-        if (@available(iOS 14.0, macOS 11.0, *)) {
-            if (binary_archive_ && archive_url_) {
-                @autoreleasepool {
-                    [(id<MTLBinaryArchive>)binary_archive_ serializeToURL:archive_url_ error:nil];
-                }
-            }
-        }
     }
 
     void ResetEncoderState() {
@@ -2201,10 +2146,6 @@ private:
     id<MTLRenderPipelineState> blit_present_pso_ = nil;
     id<MTLRenderPipelineState> blit_copy_pso_ = nil;
     id<MTLRenderPipelineState> speed_blur_pso_ = nil;
-    id binary_archive_ = nil;
-    NSURL* archive_url_ = nil;
-    bool archive_dirty_ = false;
-    uint64_t archive_last_add_frame_ = 0;
     id<MTLFunction> clear_vs_ = nil;
     id<MTLFunction> clear_fs_ = nil;
     std::unordered_map<uint32_t, id<MTLRenderPipelineState>> clear_pso_cache_;
