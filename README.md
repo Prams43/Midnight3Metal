@@ -1,4 +1,4 @@
-# MidniteMetal
+# Midnight3Metal
 
 <p align="center">
   <img src="https://img.shields.io/badge/Apple_iOS-arm64-007AFF?style=flat&logo=apple&logoColor=white" alt="Apple iOS arm64" />
