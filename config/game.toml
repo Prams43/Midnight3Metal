@@ -640,6 +640,7 @@ IDirectSoundBuffer_Stop                              = 0x3C215C
 IDirectSoundBuffer_StopEx                            = 0x3C2174
 IDirectSoundBuffer_Unlock                            = 0x3C06D7
 IDirectSoundBuffer_Use3DVoiceData                    = 0x3C2278 # thunk to CDirectSoundBuffer::Use3DVoiceData 0x3C1C2D (Thiekus's Ghidra project)
+IDirectSoundStream_FlushEx                           = 0x3C22BC # 0xB0080 C-API thunk; original runs on absent MCPX stream state
 IDirectSoundStream_SetEG                             = 0x3C22A3
 ioctlsocket                                          = 0x3CC056
 listen                                               = 0

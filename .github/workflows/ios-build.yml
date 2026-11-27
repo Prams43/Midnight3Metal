@@ -10,6 +10,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'config/**'
       - 'sdk/runtime/**'
       - 'sdk/cmake/**'
       - 'ios-app/**'

@@ -99,7 +99,7 @@ HLE_STDCALL(XInputGetState, 2) {
         port = it->second.port;
     }
     input::Pad p = input::Poll(int(port));
-    if (call < 8 || p.buttons || p.analog[0] || p.analog[1])
+    if (call < 4)
         LOGE("xapi probe: XInputGetState #%u handle=%08X port=%u connected=%u buttons=%04X A=%u B=%u",
              call, a[0], port, p.connected ? 1u : 0u, p.buttons, p.analog[0], p.analog[1]);
     if (!p.connected) return 1167;  // ERROR_DEVICE_NOT_CONNECTED

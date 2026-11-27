@@ -37,6 +37,7 @@ std::atomic<bool> g_virtual_keys[SDL_SCANCODE_COUNT] = {};
 std::atomic<bool> g_virtual_controls[static_cast<size_t>(VirtualControl::Count)] = {};
 std::atomic<int16_t> g_virtual_lx{0};
 std::atomic<int16_t> g_virtual_ly{0};
+std::atomic<uint8_t> g_ui_mode{static_cast<uint8_t>(UiMode::Menu)};
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -99,6 +100,7 @@ void MergeVirtualControls(Pad& p) {
     const bool shoulder_r = down(SDL_SCANCODE_E) || VirtualControlDown(VirtualControl::ShoulderR);
     const bool trigger_l = VirtualControlDown(VirtualControl::TriggerL);
     const bool trigger_r = VirtualControlDown(VirtualControl::TriggerR);
+    const bool thumb_l = down(SDL_SCANCODE_F) || VirtualControlDown(VirtualControl::ThumbL);
     const bool accelerate = down(SDL_SCANCODE_W) || VirtualControlDown(VirtualControl::Accelerate);
     const bool brake = down(SDL_SCANCODE_S) || VirtualControlDown(VirtualControl::Brake);
     const bool steer_right = down(SDL_SCANCODE_D) || VirtualControlDown(VirtualControl::SteerRight);
@@ -113,7 +115,7 @@ void MergeVirtualControls(Pad& p) {
     p.connected = true;
 #endif
     const bool active = dpad_up || dpad_down || dpad_left || dpad_right || confirm || back || start || face_a || face_b ||
-                        face_x || face_y || shoulder_l || shoulder_r || trigger_l || trigger_r ||
+                        face_x || face_y || shoulder_l || shoulder_r || trigger_l || trigger_r || thumb_l ||
                         accelerate || brake || steer_left || steer_right || stick_x != 0 || stick_y != 0;
     if (!active) return; // A touch press makes the synthesized controller available for this poll.
     p.connected = true;
@@ -121,9 +123,10 @@ void MergeVirtualControls(Pad& p) {
     p.buttons |= uint16_t(dpad_down) << 1;
     p.buttons |= uint16_t(dpad_left) << 2;
     p.buttons |= uint16_t(dpad_right) << 3;
-    // Report bit 4 is Start and bit 5 is Back; A/B/X/Y/Black/White/LTrig/RTrig are analog-button slots.
+    // Report bit 4 is Start, bit 5 is Back, bit 6 is Left Thumbstick Click (L3 / Special).
     p.buttons |= uint16_t(start) << 4;
     p.buttons |= uint16_t(back) << 5;
+    p.buttons |= uint16_t(thumb_l) << 6;
     if (face_a || confirm) p.analog[0] = 0xFF;
     if (face_b) p.analog[1] = 0xFF;
     if (face_x) p.analog[2] = 0xFF;
@@ -247,7 +250,7 @@ void SetVirtualControl(VirtualControl control, bool down) {
         "Confirm", "MenuBack", "Start",
         "FaceA", "FaceB", "FaceX", "FaceY",
         "ShoulderL", "ShoulderR",
-        "TriggerL", "TriggerR",
+        "TriggerL", "TriggerR", "ThumbL",
         "Accelerate", "Brake", "SteerLeft", "SteerRight"
     };
     const char* name = index < std::size(kControlNames) ? kControlNames[index] : "Unknown";
@@ -263,6 +266,14 @@ void SetVirtualLeftStick(float x, float y) {
     };
     g_virtual_lx.store(to_axis(x), std::memory_order_relaxed);
     g_virtual_ly.store(to_axis(y), std::memory_order_relaxed);
+}
+
+void SetUiMode(UiMode mode) {
+    g_ui_mode.store(static_cast<uint8_t>(mode), std::memory_order_relaxed);
+}
+
+UiMode GetUiMode() {
+    return static_cast<UiMode>(g_ui_mode.load(std::memory_order_relaxed));
 }
 
 Pad Poll(int port) {

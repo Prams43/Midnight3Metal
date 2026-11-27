@@ -76,6 +76,10 @@ X86Func* Find(uint32_t guest);
 #define SYM_DirectSoundUseLightHRTF FFFFFF0B
 #define HAS_DirectSoundUseLightHRTF 0
 #endif
+#ifndef SYM_IDirectSoundStream_FlushEx
+#define SYM_IDirectSoundStream_FlushEx FFFFFF1C
+#define HAS_IDirectSoundStream_FlushEx 0
+#endif
 #ifndef SYM_IDirectSoundStream_SetEG
 #define SYM_IDirectSoundStream_SetEG FFFFFF0C
 #define HAS_IDirectSoundStream_SetEG 0
@@ -772,7 +776,7 @@ static void AuditExports() {
         SYM(CDirectSoundStream_Set3DVoiceData), SYM(CDirectSoundStream_Use3DVoiceData),
         SYM(CDirectSoundStream_SetMaxDistance),
         SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
-        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG)};
+        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_FlushEx), SYM(IDirectSoundStream_SetEG)};
     std::string left;
     // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
     uint32_t lo = 0, hi = 0;
@@ -1168,6 +1172,7 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
         {                                                       \
             std::lock_guard<std::recursive_mutex> lock(g_lock); \
             Voice* v = Find(a[0]);                              \
+            if (!v && a[0] >= 4) v = Find(a[0] - 4);            \
             r = v ? str_##name(*v, a) : 0x80004005u;            \
             flushed.swap(t_flushed);                            \
         }                                                       \
@@ -1294,6 +1299,28 @@ STREAM(SetPitch, 2) {
 }
 STREAM(SetLFO, 2) { return 0; }
 STREAM(SetFilter, 2) { return 0; }
+// C-API wrapper thunk (0xB0080): routes to the same stream flush handler instead of running
+// original XDK code against our host stream object (which otherwise left garage music looping).
+HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
+    Count("IDirectSoundStream_FlushEx");
+    t_caller = R32(ctx.esp);
+    uint32_t r;
+    std::vector<Done> flushed;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        Voice* v = Find(a[0]);
+        if (!v && a[0] >= 4) v = Find(a[0] - 4);
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOGR("dsound: IDirectSoundStream_FlushEx obj=%08X found=%d flags=%X active=%d pkts=%zu",
+                 a[0], v ? 1 : 0, a[3], v ? int(v->active) : -1, v ? v->packets.size() : size_t(0));
+        }
+        r = v ? str_FlushEx(*v, a) : 0x80004005u;
+        flushed.swap(t_flushed);
+    }
+    Run(ctx, flushed);
+    return r;
+}
 // the library's own writes voice registers a host stream does not have; envelopes are not played
 HLE_STDCALL(IDirectSoundStream_SetEG, 2) { return 0; }
 STREAM(SetHeadroom, 2) {

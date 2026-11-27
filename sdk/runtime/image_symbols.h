@@ -208,6 +208,7 @@
 #define HAS_IDirectSoundBuffer_SetLFO       0
 #define HAS_IDirectSoundBuffer_Set3DVoiceData 0
 #define HAS_IDirectSoundBuffer_Use3DVoiceData 0
+#define HAS_IDirectSoundStream_FlushEx      0
 #define HAS_IDirectSoundStream_SetEG        0
 #define HAS_CDirectSoundStream_SetOutputBuffer 0
 #define HAS_CDirectSoundStream_SetPitch     0
@@ -274,6 +275,7 @@
 #define SYM_IDirectSoundBuffer_GetVoiceProperties   FFFFFF0D
 
 // CDirectSoundStream / IDirectSoundStream
+#define SYM_IDirectSoundStream_FlushEx              FFFFFF1C
 #define SYM_IDirectSoundStream_SetEG                FFFFFF0C
 #define SYM_CDirectSoundStream_SetOutputBuffer      FFFFFF10
 #define SYM_CDirectSoundStream_SetPitch             FFFFFF12

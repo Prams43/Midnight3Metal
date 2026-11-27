@@ -314,6 +314,22 @@ void Mc3MainLoopPadProbe(X86Context& ctx, uint8_t* base) {
     extern void Mc3EnhancedTrafficTick(X86Context&, uint8_t*);
     Mc3EnhancedTrafficTick(ctx, base);
 
+    // Report UI mode to touch overlays (iOS native racing vs menu/garage/pause HUD).
+    // State 2 is active driving/racing; 0x4B2D48 is the scaled simulation dt (0 while paused).
+    {
+        static uint32_t zero_dt_ticks = 0;
+        const bool in_world = (ctx.eax == 2);
+        const float sim_dt = (in_world && mem::IsCommitted(0x4B2D48)) ? X86_MEMF32(0x4B2D48) : 0.0f;
+        if (in_world && sim_dt > 0.0f) {
+            zero_dt_ticks = 0;
+            input::SetUiMode(input::UiMode::Driving);
+        } else {
+            if (!in_world || ++zero_dt_ticks >= 4) {
+                input::SetUiMode(input::UiMode::Menu);
+            }
+        }
+    }
+
     // These raw pad buffers only bootstrap the pre-game screens. During
     // gameplay the normal pad poll owns both current and previous buttons;
     // rewriting them here can consume Start before the pause handler sees it.
@@ -360,10 +376,11 @@ void Mc3TitleEventProbe(X86Context& ctx, uint8_t* base) {
 }
 
 void Mc3FlashDrawProbe(X86Context& ctx, uint8_t* base) {
+    g_active_flash_self = ctx.ecx;
+#ifdef _WIN32
     static uint32_t last_self = 0;
     static uint32_t state7_calls = 0;
     const uint32_t self = ctx.ecx;
-    g_active_flash_self = self;
     const bool valid_self = self >= 0x80000000u && self < mem::PhysicalEnd();
     const uint32_t root = valid_self ? X86_MEM32(self + 8) : 0;
     const uint32_t state_obj = X86_MEM32(0x557ED0);
@@ -378,9 +395,13 @@ void Mc3FlashDrawProbe(X86Context& ctx, uint8_t* base) {
              valid_self ? X86_MEM8(self + 12) : 0,
              valid_self ? X86_MEM8(self + 13) : 0);
     last_self = self;
+#else
+    (void)base;
+#endif
 }
 
 void Mc3MenuDrawProbe(X86Context& ctx, uint8_t* base) {
+#ifdef _WIN32
     static uint32_t calls = 0;
     static uint32_t last_self = 0;
     const uint32_t state_obj = X86_MEM32(0x557ED0);
@@ -391,9 +412,14 @@ void Mc3MenuDrawProbe(X86Context& ctx, uint8_t* base) {
         LOGE("MC3 frontend: menu Draw state=%u self=%08X vtable=%08X",
              state, ctx.ecx, X86_MEM32(ctx.ecx));
     last_self = ctx.ecx;
+#else
+    (void)ctx;
+    (void)base;
+#endif
 }
 
 void Mc3FlashNodeDrawProbe(X86Context& ctx, uint8_t* base) {
+#ifdef _WIN32
     static uint32_t shown = 0;
     static uint32_t last_flash = 0;
     const uint32_t state_obj = X86_MEM32(0x557ED0);
@@ -420,6 +446,10 @@ void Mc3FlashNodeDrawProbe(X86Context& ctx, uint8_t* base) {
          node >= 0x80000000u && node < mem::PhysicalEnd() ? X86_MEM8(node + 0x6C) : 0,
          node >= 0x80000000u && node < mem::PhysicalEnd() ? X86_MEM8(node + 0x43) : 0,
          drawable, vtable, target, X86_MEM32(ctx.esp + 4), X86_MEM32(ctx.esp + 8));
+#else
+    (void)ctx;
+    (void)base;
+#endif
 }
 
 void Mc3MenuVirtualDrawProbe(X86Context& ctx, uint8_t* base) {

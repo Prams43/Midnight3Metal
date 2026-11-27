@@ -26,12 +26,20 @@ void OnScancode(uint32_t scancode, bool down);
 enum class VirtualControl : uint8_t {
     DpadUp, DpadDown, DpadLeft, DpadRight, Confirm, MenuBack, Start,
     FaceA, FaceB, FaceX, FaceY, ShoulderL, ShoulderR,
-    TriggerL, TriggerR,
+    TriggerL, TriggerR, ThumbL,
     Accelerate, Brake, SteerLeft, SteerRight, Count
+};
+// High-level UI context reported by the game so touch overlays can switch
+// automatically between Menu/Garage navigation and native Driving controls.
+enum class UiMode : uint8_t {
+    Menu = 0,
+    Driving = 1,
 };
 // Set/release one held action; callers should pair each press with a release.
 void SetVirtualControl(VirtualControl control, bool down);
 // Set the virtual left analog stick axes in [-1.0, 1.0] (+x right, +y up).
 void SetVirtualLeftStick(float x, float y);
+void SetUiMode(UiMode mode);
+UiMode GetUiMode();
 
 }  // namespace input
