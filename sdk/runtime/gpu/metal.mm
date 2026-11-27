@@ -1477,7 +1477,7 @@ private:
         bound_vsc_valid_ = false;
     }
 
-    bool AllocateRing(const void* data, size_t bytes, size_t align, id<MTLBuffer>& out_buf, NSUInteger& out_off) {
+    bool AllocateRing(const void* data, size_t bytes, size_t align, __strong id<MTLBuffer>& out_buf, NSUInteger& out_off) {
         if (bytes == 0) return false;
         const size_t mask = align - 1;
         const size_t aligned = (ring_off_ + mask) & ~mask;
