@@ -790,7 +790,7 @@ static void AuditExports() {
             std::snprintf(b, sizeof b, " %05X at %08X", id, va);
             left += b;
         }
-    if (!left.empty()) LOGW("dsound: exports running their original code:%s", left.c_str());
+    if (!left.empty()) LOGR("dsound: exports running their original code:%s", left.c_str());
 }
 
 HLE_STDCALL(DirectSoundCreate, 3) {
@@ -970,7 +970,7 @@ BUFFER(Stop, 1) {
 // DSBSTOPEX_RELEASEWAVEFORM the wave leaves its loop meanwhile: XACT stops its sounds this way. The voice still plays
 // until the release ends. Without a release, or with DSBSTOPEX_IMMEDIATE, it stops now. The time stamp is not kept.
 BUFFER(StopEx, 4) {
-    if (!(a[3] & 1) || !v.playing || !v.eg_mode || !v.eg[4]) {
+    if (!(a[3] & 1) || !v.playing || !v.data || !v.eg_mode || !v.eg[4]) {
         v.playing = false;
         v.eg_out = -1;
         return 0;
@@ -1217,7 +1217,12 @@ STREAM(GetInfo, 2) {
     return 0;
 }
 STREAM(GetStatus, 2) {
-    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);  // XMEDIASTATUS_ACCEPT_INPUT
+    uint32_t st = v.packets.size() < v.max_packets ? 1u : 0u;  // DSSTREAMSTATUS_READY / XMEDIASTATUS_ACCEPT_INPUT
+    if (v.paused) st |= 0x00020000u;                           // DSSTREAMSTATUS_PAUSED
+    else if (v.active && !v.sync) {
+        st |= v.packets.empty() ? 0x00040000u : 0x00010000u;   // DSSTREAMSTATUS_STARVED / DSSTREAMSTATUS_PLAYING
+    }
+    W32(a[1], st);
     return 0;
 }
 STREAM(GetVoiceProperties, 2) {
@@ -1252,13 +1257,22 @@ STREAM(Flush, 1) {
     return 0;
 }
 STREAM(FlushEx, 4) {
-    if (a[3] && !v.active) return 0;
+    if (a[3] && !v.active && v.packets.empty()) {
+        bool has_done = false;
+        for (const auto& d : g_done) {
+            if (d.voice == v.obj) {
+                has_done = true;
+                break;
+            }
+        }
+        if (!has_done) return 0;
+    }
     FlushStream(v);
     return 0;
 }
 STREAM(Pause, 2) {
-    v.paused = a[1] == 1;
-    v.sync = a[1] == 2;
+    v.paused = (a[1] == 1 || a[1] == 3);  // DSSPAUSE_PAUSE, DSSPAUSE_PAUSENOACTIVATE
+    v.sync = (a[1] == 2);                 // DSSPAUSE_SYNCHPLAYBACK
     return 0;
 }
 STREAM(SetVolume, 2) {

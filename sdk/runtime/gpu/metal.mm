@@ -115,10 +115,10 @@ MTLBlendFactor ToMetalBlend(uint32_t nv_blend, bool is_alpha) {
     case 0x306:  return is_alpha ? MTLBlendFactorDestinationAlpha : MTLBlendFactorDestinationColor;
     case 0x307:  return is_alpha ? MTLBlendFactorOneMinusDestinationAlpha : MTLBlendFactorOneMinusDestinationColor;
     case 0x308:  return MTLBlendFactorSourceAlphaSaturated;
-    case 0x8001:
-    case 0x8003: return is_alpha ? MTLBlendFactorBlendAlpha : MTLBlendFactorBlendColor;
-    case 0x8002:
-    case 0x8004: return is_alpha ? MTLBlendFactorOneMinusBlendAlpha : MTLBlendFactorOneMinusBlendColor;
+    case 0x8001: return is_alpha ? MTLBlendFactorBlendAlpha : MTLBlendFactorBlendColor;
+    case 0x8002: return is_alpha ? MTLBlendFactorOneMinusBlendAlpha : MTLBlendFactorOneMinusBlendColor;
+    case 0x8003: return MTLBlendFactorBlendAlpha;
+    case 0x8004: return MTLBlendFactorOneMinusBlendAlpha;
     default:     return MTLBlendFactorOne;
     }
 }
@@ -511,14 +511,24 @@ public:
         id<MTLSamplerState> stage_smp[4] = { sampler_, sampler_, sampler_, sampler_ };
         TexInfo tex_info[4]{};
         float tex_dims[4][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 1.0f}};
+        bool stage_is_rt[4] = {};
+        uint32_t stage_rt_w[4] = {}, stage_rt_h[4] = {};
         for (int t = 0; t < 4; ++t) {
             if (s.textures[t]) {
                 TextureDesc td{};
+                bool is_rt = false;
                 const uint32_t simple_pal = s.simple[(0x1B20 + uint32_t(t) * 0x40) / 4];
-                id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], simple_pal, rt_va, &td);
+                id<MTLTexture> mt = ResolveTexture(s.textures[t], s.palettes[t], simple_pal, rt_va, &td, &is_rt);
                 if (mt) {
                     stage_tex[t] = mt;
-                    tex_info[t].kind = (td.cube) ? kTexCube : (td.depth > 1) ? kTex3D : kTex2D;
+                    stage_is_rt[t] = is_rt;
+                    if (is_rt) {
+                        stage_rt_w[t] = uint32_t(mt.width);
+                        stage_rt_h[t] = uint32_t(mt.height);
+                    }
+                    tex_info[t].kind = (mt.textureType == MTLTextureTypeCube) ? kTexCube
+                                     : (mt.textureType == MTLTextureType3D)   ? kTex3D
+                                     : kTex2D;
                     tex_info[t].rect = td.linear ? 1 : 0;
                     tex_dims[t][0] = td.width ? float(td.width) : 1.0f;
                     tex_dims[t][1] = td.height ? float(td.height) : 1.0f;
@@ -529,6 +539,25 @@ public:
                     }
                 }
             }
+        }
+
+        const bool blend_on = s.simple[kMBlendEnable / 4] != 0;
+        const uint32_t src_b = s.simple[kMSrcBlend / 4];
+        const uint32_t dst_b = s.simple[kMDestBlend / 4];
+        const uint32_t blend_op = s.simple[kMBlendOp / 4];
+
+        // Suppress MC3's mcSenseOfSpeed half-resolution radial speed-blur composite
+        // (same narrow signature as D3D12Backend::Draw), which accumulates heavy 480p
+        // ghosting across frames at 60+ FPS while leaving additive glow/HUD/video intact.
+        if (a.pretransformed && prim == 6 && count == 4 &&
+            s.vs_handle == 0x1C4 && !s.ps &&
+            target_w == guest_width_ && target_h == guest_height_ &&
+            s.viewport.x == 0 && s.viewport.y == 0 &&
+            s.viewport.w == guest_width_ && s.viewport.h == guest_height_ &&
+            stage_is_rt[0] && stage_rt_w[0] * 2 == target_w && stage_rt_h[0] * 2 == target_h &&
+            !s.textures[1] && !s.textures[2] && !s.textures[3] &&
+            blend_on && src_b == 0x302 && dst_b == 0x303) {
+            return;
         }
 
         // Determine active vertex registers supplied by our full 16-register MetalVertex layout
@@ -632,24 +661,31 @@ public:
         color_rts_[rt_va].drawn = true;
         last_rt_va_ = rt_va;
 
-        if (s.scissor_count > 0) {
-            const int32_t sx0 = std::clamp<int32_t>(int32_t(s.scissors[0]), 0, int32_t(target_w));
-            const int32_t sy0 = std::clamp<int32_t>(int32_t(s.scissors[1]), 0, int32_t(target_h));
-            const int32_t sx1 = std::clamp<int32_t>(int32_t(s.scissors[2]), 0, int32_t(target_w));
-            const int32_t sy1 = std::clamp<int32_t>(int32_t(s.scissors[3]), 0, int32_t(target_h));
-            if (sx1 <= sx0 || sy1 <= sy0) return;
-            [encoder_ setScissorRect:MTLScissorRect{
-                NSUInteger(sx0), NSUInteger(sy0),
-                NSUInteger(sx1 - sx0), NSUInteger(sy1 - sy0)
-            }];
-        } else {
-            [encoder_ setScissorRect:MTLScissorRect{0, 0, target_w, target_h}];
+        // Always clip to the active viewport (and any explicit scissor rect) just like
+        // Xbox D3D8/NV2A, so sub-viewport draws such as the minimap never bleed outside.
+        int32_t sx0 = 0, sy0 = 0, sx1 = int32_t(target_w), sy1 = int32_t(target_h);
+        if (s.viewport.w && s.viewport.h) {
+            sx0 = std::max<int32_t>(sx0, int32_t(s.viewport.x));
+            sy0 = std::max<int32_t>(sy0, int32_t(s.viewport.y));
+            sx1 = std::min<int32_t>(sx1, int32_t(s.viewport.x + s.viewport.w));
+            sy1 = std::min<int32_t>(sy1, int32_t(s.viewport.y + s.viewport.h));
         }
+        if (s.scissor_count > 0) {
+            sx0 = std::max<int32_t>(sx0, int32_t(s.scissors[0]));
+            sy0 = std::max<int32_t>(sy0, int32_t(s.scissors[1]));
+            sx1 = std::min<int32_t>(sx1, int32_t(s.scissors[2]));
+            sy1 = std::min<int32_t>(sy1, int32_t(s.scissors[3]));
+        }
+        sx0 = std::clamp<int32_t>(sx0, 0, int32_t(target_w));
+        sy0 = std::clamp<int32_t>(sy0, 0, int32_t(target_h));
+        sx1 = std::clamp<int32_t>(sx1, 0, int32_t(target_w));
+        sy1 = std::clamp<int32_t>(sy1, 0, int32_t(target_h));
+        if (sx1 <= sx0 || sy1 <= sy0) return;
+        [encoder_ setScissorRect:MTLScissorRect{
+            NSUInteger(sx0), NSUInteger(sy0),
+            NSUInteger(sx1 - sx0), NSUInteger(sy1 - sy0)
+        }];
 
-        const bool blend_on = s.simple[kMBlendEnable / 4] != 0;
-        const uint32_t src_b = s.simple[kMSrcBlend / 4];
-        const uint32_t dst_b = s.simple[kMDestBlend / 4];
-        const uint32_t blend_op = s.simple[kMBlendOp / 4];
         const uint32_t cw_raw = s.simple[kMColorWriteEnable / 4];
         const MTLColorWriteMask write_mask = s.rt.header
             ? ToMetalWriteMask(cw_raw)
@@ -1346,14 +1382,18 @@ private:
     }
 
     id<MTLTexture> ResolveTexture(uint32_t header_va, uint32_t palette_va, uint32_t simple_palette,
-                                  uint32_t current_rt_va, TextureDesc* out_desc = nullptr) {
+                                  uint32_t current_rt_va, TextureDesc* out_desc = nullptr, bool* out_is_rt = nullptr) {
         TextureDesc d;
         if (!Describe(header_va, d) || !d.data || !d.width || !d.height) return nil;
         if (out_desc) *out_desc = d;
+        if (out_is_rt) *out_is_rt = false;
         const auto& fi = Format(d.format);
         const bool is_bc = (fi.host == gpu::Host::BC1 || fi.host == gpu::Host::BC2 || fi.host == gpu::Host::BC3);
-        if (!is_bc) {
-            if (auto it = color_rts_.find(d.data); it != color_rts_.end() && it->second.tex && it->second.drawn) {
+        if (!is_bc && !d.cube && d.depth <= 1 && d.format != 0x24 && d.format != 0x25 && d.format != 0x0B) {
+            if (auto it = color_rts_.find(d.data);
+                it != color_rts_.end() && it->second.tex && it->second.drawn &&
+                it->second.w == d.width && it->second.h == d.height) {
+                if (out_is_rt) *out_is_rt = true;
                 if (it->second.pending_clear) FlushColorClear(it->second);
                 if (d.data == current_rt_va) {
                     return CopyToFeedback(it->second.tex);
@@ -1391,35 +1431,85 @@ private:
         const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
         uint64_t epoch = DirtyEpoch(d.data) ^ (pal_hash * 0xBF58476D1CE4E5B9ull);
         if (d.linear && !is_bc) {
-            // Sample 4 locations of linear textures (e.g. Bink YUY2 video frames) so in-place CPU updates
+            // Sample 16 evenly spaced locations of linear textures (e.g. Bink YUY2 video frames) so in-place CPU updates
             // are detected even when updated without Lock/BlockUntilNotBusy.
             const uint32_t total = d.pitch * d.height;
             if (total >= 64) {
-                const uint64_t s0 = Hash(guest, 64);
-                const uint64_t s1 = Hash(guest + total / 3, std::min<uint32_t>(64, total - total / 3));
-                const uint64_t s2 = Hash(guest + total / 2, std::min<uint32_t>(64, total - total / 2));
-                const uint64_t s3 = Hash(guest + (total * 2) / 3, std::min<uint32_t>(64, total - (total * 2) / 3));
-                epoch ^= s0 ^ (s1 * 0x9E3779B97F4A7C15ull) ^ (s2 * 0xBF58476D1CE4E5B9ull) ^ (s3 * 0x94D049BB133111EBull);
+                const uint32_t stride = total / 16;
+                uint64_t sig = total;
+                for (uint32_t i = 0; i < 16; ++i) {
+                    const uint32_t off = std::min<uint32_t>(i * stride, total - 64);
+                    sig = Hash(guest + off, 64, sig);
+                }
+                epoch ^= sig;
             }
         }
+        const MTLTextureType want_type = (d.cube && d.width == d.height) ? MTLTextureTypeCube
+                                       : (d.depth > 1)                   ? MTLTextureType3D
+                                       : MTLTextureType2D;
         const uint64_t cache_key = (uint64_t(pal_data_va) << 32) | d.data;
         auto& entry = tex_cache_[cache_key];
-        if (entry.tex && entry.format == d.format && entry.w == d.width && entry.h == d.height &&
-            entry.epoch == epoch) {
+        if (entry.tex && entry.tex.textureType == want_type && entry.format == d.format &&
+            entry.w == d.width && entry.h == d.height && entry.epoch == epoch) {
             return entry.tex;
         }
 
         const uint32_t* pal = pal_data_va ? pal_buf : nullptr;
+
+        if (d.cube && d.width == d.height) {
+            MTLTextureDescriptor* td = [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:mtl_fmt
+                                                                                             size:d.width
+                                                                                        mipmapped:NO];
+            id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
+            if (!tex) return nil;
+            for (uint32_t face = 0; face < 6; ++face) {
+                std::vector<uint8_t> decoded;
+                uint32_t pitch = 0;
+                DecodeLevel(d, 0, face, guest, pal, decoded, pitch);
+                if (decoded.empty() || !pitch) continue;
+                if (is_bc) {
+                    std::vector<uint8_t> bgra;
+                    uint32_t bgra_pitch = 0;
+                    DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
+                    decoded = std::move(bgra);
+                    pitch = bgra_pitch;
+                }
+                [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
+                       mipmapLevel:0
+                             slice:face
+                         withBytes:decoded.data()
+                       bytesPerRow:pitch
+                     bytesPerImage:size_t(pitch) * d.height];
+            }
+            entry = {tex, d.format, d.width, d.height, epoch};
+            return tex;
+        }
+
         std::vector<uint8_t> decoded;
         uint32_t pitch = 0;
         DecodeLevel(d, 0, 0, guest, pal, decoded, pitch);
         if (decoded.empty() || !pitch) return nil;
         if (is_bc) {
-            std::vector<uint8_t> bgra;
-            uint32_t bgra_pitch = 0;
-            DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
-            decoded = std::move(bgra);
-            pitch = bgra_pitch;
+            if (d.depth > 1) {
+                const uint32_t bh = std::max(1u, (d.height + 3) / 4);
+                const size_t slice_in = size_t(pitch) * bh;
+                std::vector<uint8_t> vol;
+                uint32_t bgra_pitch = d.width * 4;
+                vol.reserve(size_t(bgra_pitch) * d.height * d.depth);
+                for (uint32_t z = 0; z < d.depth; ++z) {
+                    std::vector<uint8_t> slice_bgra;
+                    DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data() + z * slice_in, slice_bgra, bgra_pitch);
+                    vol.insert(vol.end(), slice_bgra.begin(), slice_bgra.end());
+                }
+                decoded = std::move(vol);
+                pitch = bgra_pitch;
+            } else {
+                std::vector<uint8_t> bgra;
+                uint32_t bgra_pitch = 0;
+                DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
+                decoded = std::move(bgra);
+                pitch = bgra_pitch;
+            }
         } else if (d.format == 0x24 || d.format == 0x25) {
             // Guard against uninitialized YUY2/UYVY pixels (all-0x00 -> bright green, all-0xFF -> bright pink/purple)
             // before or between Bink frames. Valid studio-range BT.601 black is 0x80108010, never 0x00000000 or 0xFFFFFFFF.
@@ -1461,16 +1551,35 @@ private:
             }
         }
 
-        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtl_fmt
-                                                                                      width:d.width
-                                                                                     height:d.height
-                                                                                  mipmapped:NO];
-        id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
-        if (!tex) return nil;
-        [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
-               mipmapLevel:0
-                 withBytes:decoded.data()
-               bytesPerRow:pitch];
+        id<MTLTexture> tex = nil;
+        if (d.depth > 1) {
+            MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+            td.textureType = MTLTextureType3D;
+            td.pixelFormat = mtl_fmt;
+            td.width = d.width;
+            td.height = d.height;
+            td.depth = d.depth;
+            td.mipmapLevelCount = 1;
+            tex = [device_ newTextureWithDescriptor:td];
+            if (!tex) return nil;
+            [tex replaceRegion:MTLRegionMake3D(0, 0, 0, d.width, d.height, d.depth)
+                   mipmapLevel:0
+                         slice:0
+                     withBytes:decoded.data()
+                   bytesPerRow:pitch
+                 bytesPerImage:size_t(pitch) * d.height];
+        } else {
+            MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtl_fmt
+                                                                                          width:d.width
+                                                                                         height:d.height
+                                                                                      mipmapped:NO];
+            tex = [device_ newTextureWithDescriptor:td];
+            if (!tex) return nil;
+            [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
+                   mipmapLevel:0
+                     withBytes:decoded.data()
+                   bytesPerRow:pitch];
+        }
         entry = {tex, d.format, d.width, d.height, epoch};
         return tex;
     }

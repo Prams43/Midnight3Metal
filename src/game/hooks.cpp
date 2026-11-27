@@ -475,8 +475,13 @@ X86_FUNC(sub_003ACDF0) {
             std::lock_guard<std::mutex> g(lock);
             Movie& m = movies[bink];
             if (m.frame != frame) {
-                // the frame on screen changed: it stays one period after the previous one was due
-                m.due = (m.frame == ~0u || now - m.due > std::chrono::milliseconds(250)) ? now + period : m.due + period;
+                // On the first frame of a movie (m.frame == ~0u), decode immediately rather than
+                // waiting one period, which otherwise drew uninitialized YUY2 texture memory.
+                if (m.frame == ~0u) {
+                    m.due = now;
+                } else {
+                    m.due = (now - m.due > std::chrono::milliseconds(250)) ? now + period : m.due + period;
+                }
                 m.frame = frame;
             }
             wait = now < m.due ? 1u : 0u;
