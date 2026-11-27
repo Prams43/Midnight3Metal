@@ -1343,7 +1343,7 @@ HLE_STDCALL(IDirectSoundStream_FlushEx, 4) {
         if (!v && a[0] >= 4) v = Find(a[0] - 4);
         static std::atomic<int> logged{0};
         if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-            LOGR("dsound: IDirectSoundStream_FlushEx caller=%08X obj=%08X found=%d flags=%X active=%d pkts=%zu creator=%08X",
+            LOGI("dsound: IDirectSoundStream_FlushEx caller=%08X obj=%08X found=%d flags=%X active=%d pkts=%zu creator=%08X",
                  t_caller, a[0], v ? 1 : 0, a[3], v ? int(v->active) : -1,
                  v ? v->packets.size() : size_t(0), v ? v->creator : 0u);
         }

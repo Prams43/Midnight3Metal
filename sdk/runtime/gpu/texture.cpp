@@ -1,6 +1,7 @@
 #include "gpu/texture.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
 #include <mutex>
@@ -261,9 +262,15 @@ uint64_t g_epoch = 1;
 }  // namespace
 
 const FormatInfo& Format(uint32_t f) {
-    for (auto& e : kFormats)
-        if (e.id == f) return e.info;
-    return kUnknown;
+    static const std::array<const FormatInfo*, 256> kTable = [] {
+        std::array<const FormatInfo*, 256> t{};
+        t.fill(&kUnknown);
+        for (const auto& e : kFormats) {
+            if (e.id < t.size()) t[e.id] = &e.info;
+        }
+        return t;
+    }();
+    return f < kTable.size() ? *kTable[f] : kUnknown;
 }
 
 bool Describe(uint32_t header, TextureDesc& d) {
@@ -375,7 +382,10 @@ void DecodeLevel(const TextureDesc& d, uint32_t level, uint32_t face, const uint
     }
     uint32_t mx, my, mz;
     SwizzleMasks(w, h, z, mx, my, mz);
-    std::vector<uint32_t> xo(w), yo(h), zo(z);
+    thread_local std::vector<uint32_t> xo, yo, zo;
+    xo.resize(w);
+    yo.resize(h);
+    zo.resize(z);
     for (uint32_t x = 0; x < w; x++) xo[x] = Deposit(x, mx);
     for (uint32_t y = 0; y < h; y++) yo[y] = Deposit(y, my);
     for (uint32_t k = 0; k < z; k++) zo[k] = Deposit(k, mz);

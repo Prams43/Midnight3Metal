@@ -77,7 +77,6 @@ No jailbreak and **no JIT** are required — everything runs natively as ARM64 c
    - Copy **`default.xbe`** and all extracted game asset folders from your legally obtained original Xbox copy of *Midnight Club 3: DUB Edition Remix* directly into that folder.
    - *(Note: The `.ipa` does **not** include any game data, textures, audio, or movies — you must provide your own copy.)*
 4. **Launch `MC3 Remix`** in landscape orientation:
-   - Tap the top-left corner (`60×60` zone) to hide or show the on-screen debug log panel.
    - Touch controls automatically switch between **Driving** and **Menu / Garage** modes; use the top bar buttons to switch steering style (`◀▶` / `◎`) or manually toggle `MENU` / `DRIVE` at any time.
    - Connect any Bluetooth / MFi / Xbox / PlayStation controller for native gamepad play.
 

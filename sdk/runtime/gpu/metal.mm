@@ -15,6 +15,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -380,6 +381,7 @@ public:
                     ct.clear_color = MTLClearColorMake(r_f, g_f, b_f, a_f);
                     ct.pending_clear = true;
                     ct.drawn = true;
+                    ct.drawn_epoch = DirtyEpoch(rt_va);
                     last_rt_va_ = rt_va;
                     if (encoder_ && active_color_tex_ == ct.tex) EndEncoder();
                 } else {
@@ -420,6 +422,7 @@ public:
                                 [enc endEncoding];
                             }
                             ct.drawn = true;
+                            ct.drawn_epoch = DirtyEpoch(rt_va);
                             if (also_z) handled_z = true;
                         }
                     }
@@ -839,7 +842,13 @@ public:
         }
 
         if (use_translated) {
-            DrawConstants dc{};
+            DrawConstants dc;
+            if (is_prog_vs) {
+                std::memset(&dc, 0, offsetof(DrawConstants, wvp));
+                std::memset(dc.ext, 0, sizeof(dc.ext) + sizeof(dc.spread));
+            } else {
+                std::memset(&dc, 0, sizeof(dc));
+            }
             FillDrawConstants(s, fk, dc, tex_dims, target_w, target_h, is_prog_vs, a.pretransformed);
             id<MTLBuffer> dc_buf = nil;
             NSUInteger dc_off = 0;
@@ -990,6 +999,7 @@ public:
                 }
                 dst_ct.pending_clear = false;
                 dst_ct.drawn = true;
+                dst_ct.drawn_epoch = DirtyEpoch(dst_va);
                 return;
             }
             // CPU-written surface copy in guest memory (e.g. video/splash surfaces)
@@ -1037,6 +1047,7 @@ public:
                 last_cmd_buf_ = cmd_buf_;
                 cmd_buf_ = nil;
             }
+            ++frame_id_;
             g_presented_frames.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -1076,9 +1087,25 @@ private:
     struct CachedTex {
         id<MTLTexture> tex = nil;
         uint32_t format = 0;
-        uint32_t w = 0, h = 0;
+        uint32_t w = 0, h = 0, depth = 1;
         uint64_t epoch = ~0ull;
+        uint64_t pal_hash = 0;
+        uint64_t frame = 0;
+        uint64_t last_used_frame = 0;
     };
+
+    static uint64_t MemSig(const uint8_t* p, uint32_t total) {
+        if (!p || !total) return 0;
+        uint64_t sig = total;
+        if (total <= 4096) return Hash(p, total, sig);
+        constexpr uint32_t kSamples = 16;
+        constexpr uint32_t kBytes = 64;
+        for (uint32_t i = 0; i < kSamples; ++i) {
+            const uint32_t off = uint32_t(uint64_t(total - kBytes) * i / (kSamples - 1));
+            sig = Hash(p + off, kBytes, sig);
+        }
+        return sig;
+    }
 
     id<MTLFunction> GetOrCompileFunction(uint64_t hash, const std::string& msl, NSString* entry,
                                          std::unordered_map<uint64_t, id<MTLFunction>>& cache) {
@@ -1178,12 +1205,14 @@ private:
 
         unpack_c(s.rs[kRsTextureFactor], dc.tfactor);
 
-        for (int i = 0; i < 8; ++i) {
-            unpack_c(s.simple[kMPsConstant0 / 4 + i], dc.pc[i * 2 + 0]);
-            unpack_c(s.simple[kMPsConstant1 / 4 + i], dc.pc[i * 2 + 1]);
+        if (s.ps) {
+            for (int i = 0; i < 8; ++i) {
+                unpack_c(s.simple[kMPsConstant0 / 4 + i], dc.pc[i * 2 + 0]);
+                unpack_c(s.simple[kMPsConstant1 / 4 + i], dc.pc[i * 2 + 1]);
+            }
+            unpack_c(s.simple[kMPsFinalConstant0 / 4], dc.pc[16]);
+            unpack_c(s.simple[kMPsFinalConstant1 / 4], dc.pc[17]);
         }
-        unpack_c(s.simple[kMPsFinalConstant0 / 4], dc.pc[16]);
-        unpack_c(s.simple[kMPsFinalConstant1 / 4], dc.pc[17]);
 
         for (int t = 0; t < 4; ++t) {
             dc.texsize[t][0] = tex_dims[t][0];
@@ -1455,6 +1484,7 @@ private:
         bool pending_clear = true;
         MTLClearColor clear_color = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
         bool drawn = false;
+        uint64_t drawn_epoch = 0;
     };
 
     struct DepthTarget {
@@ -1626,7 +1656,8 @@ private:
         if (!is_bc && !d.cube && d.depth <= 1 && d.format != 0x24 && d.format != 0x25 && d.format != 0x0B) {
             if (auto it = color_rts_.find(d.data);
                 it != color_rts_.end() && it->second.tex && it->second.drawn &&
-                it->second.w == d.width && it->second.h == d.height) {
+                it->second.w == d.width && it->second.h == d.height &&
+                it->second.drawn_epoch == DirtyEpoch(d.data)) {
                 if (out_is_rt) *out_is_rt = true;
                 if (it->second.pending_clear) FlushColorClear(it->second);
                 if (d.data == current_rt_va) {
@@ -1655,6 +1686,8 @@ private:
                 pal_bytes = (256u >> size_code) * sizeof(uint32_t);
             } else if (simple_palette) {
                 pal_data_va = mem::VirtualFromPhysical(simple_palette & ~0x3Fu);
+                const uint32_t size_code = (simple_palette >> 2) & 3u;
+                pal_bytes = (256u >> size_code) * sizeof(uint32_t);
             }
             if (pal_data_va) {
                 std::memcpy(pal_buf, kernel::HostPtr(pal_data_va), pal_bytes);
@@ -1662,160 +1695,162 @@ private:
             }
         }
 
-        const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-        uint64_t epoch = DirtyEpoch(d.data) ^ (pal_hash * 0xBF58476D1CE4E5B9ull);
-        if (d.linear && !is_bc) {
-            // Sample 16 evenly spaced locations of linear textures (e.g. Bink YUY2 video frames) so in-place CPU updates
-            // are detected even when updated without Lock/BlockUntilNotBusy.
-            const uint32_t total = d.pitch * d.height;
-            if (total >= 64) {
-                const uint32_t stride = total / 16;
-                uint64_t sig = total;
-                for (uint32_t i = 0; i < 16; ++i) {
-                    const uint32_t off = std::min<uint32_t>(i * stride, total - 64);
-                    sig = Hash(guest + off, 64, sig);
-                }
-                epoch ^= sig;
-            }
-        }
         const MTLTextureType want_type = (d.cube && d.width == d.height) ? MTLTextureTypeCube
                                        : (d.depth > 1)                   ? MTLTextureType3D
                                        : MTLTextureType2D;
         const uint64_t cache_key = (uint64_t(pal_data_va) << 32) | d.data;
         auto& entry = tex_cache_[cache_key];
-        if (entry.tex && entry.tex.textureType == want_type && entry.format == d.format &&
-            entry.w == d.width && entry.h == d.height && entry.epoch == epoch) {
+        const bool same_meta = entry.tex && entry.tex.textureType == want_type &&
+                               entry.format == d.format && entry.w == d.width &&
+                               entry.h == d.height && entry.depth == d.depth;
+        // Fast path: already validated during this frame (skips DirtyEpoch mutex & MemSig hashing)
+        if (same_meta && entry.frame == frame_id_ && entry.pal_hash == pal_hash) {
+            entry.last_used_frame = frame_id_;
+            return entry.tex;
+        }
+
+        const uint8_t* guest = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
+        const uint32_t total = d.linear ? (d.pitch * d.height) : TotalSize(d);
+        const uint64_t epoch = DirtyEpoch(d.data) ^ MemSig(guest, total) ^ (pal_hash * 0xBF58476D1CE4E5B9ull);
+        if (same_meta && entry.epoch == epoch) {
+            entry.frame = frame_id_;
+            entry.pal_hash = pal_hash;
+            entry.last_used_frame = frame_id_;
             return entry.tex;
         }
 
         const uint32_t* pal = pal_data_va ? pal_buf : nullptr;
+        const bool can_reuse = same_meta && entry.tex.pixelFormat == mtl_fmt &&
+                               (entry.last_used_frame + kRingCount <= frame_id_);
 
-        if (d.cube && d.width == d.height) {
-            MTLTextureDescriptor* td = [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:mtl_fmt
-                                                                                             size:d.width
-                                                                                        mipmapped:NO];
-            id<MTLTexture> tex = [device_ newTextureWithDescriptor:td];
-            if (!tex) return nil;
-            for (uint32_t face = 0; face < 6; ++face) {
-                std::vector<uint8_t> decoded;
-                uint32_t pitch = 0;
-                DecodeLevel(d, 0, face, guest, pal, decoded, pitch);
-                if (decoded.empty() || !pitch) continue;
-                if (is_bc) {
-                    std::vector<uint8_t> bgra;
+        @autoreleasepool {
+            if (d.cube && d.width == d.height) {
+                id<MTLTexture> tex = can_reuse ? entry.tex : nil;
+                if (!tex) {
+                    MTLTextureDescriptor* td = [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:mtl_fmt
+                                                                                                     size:d.width
+                                                                                                mipmapped:NO];
+                    tex = [device_ newTextureWithDescriptor:td];
+                    if (!tex) return nil;
+                }
+                for (uint32_t face = 0; face < 6; ++face) {
+                    uint32_t pitch = 0;
+                    DecodeLevel(d, 0, face, guest, pal, scratch_decode_, pitch);
+                    if (scratch_decode_.empty() || !pitch) continue;
+                    const uint8_t* src_ptr = scratch_decode_.data();
+                    if (is_bc) {
+                        uint32_t bgra_pitch = 0;
+                        DecompressBcToBgra8(fi.host, d.width, d.height, scratch_decode_.data(), scratch_bc_, bgra_pitch);
+                        src_ptr = scratch_bc_.data();
+                        pitch = bgra_pitch;
+                    }
+                    [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
+                           mipmapLevel:0
+                                 slice:face
+                             withBytes:src_ptr
+                           bytesPerRow:pitch
+                         bytesPerImage:size_t(pitch) * d.height];
+                }
+                entry = {tex, d.format, d.width, d.height, d.depth, epoch, pal_hash, frame_id_, frame_id_};
+                return tex;
+            }
+
+            uint32_t pitch = 0;
+            DecodeLevel(d, 0, 0, guest, pal, scratch_decode_, pitch);
+            if (scratch_decode_.empty() || !pitch) return nil;
+            const uint8_t* upload_ptr = scratch_decode_.data();
+            if (is_bc) {
+                if (d.depth > 1) {
+                    const uint32_t bh = std::max(1u, (d.height + 3) / 4);
+                    const size_t slice_in = size_t(pitch) * bh;
+                    std::vector<uint8_t> vol;
+                    uint32_t bgra_pitch = d.width * 4;
+                    vol.reserve(size_t(bgra_pitch) * d.height * d.depth);
+                    for (uint32_t z = 0; z < d.depth; ++z) {
+                        DecompressBcToBgra8(fi.host, d.width, d.height, scratch_decode_.data() + z * slice_in, scratch_bc_, bgra_pitch);
+                        vol.insert(vol.end(), scratch_bc_.begin(), scratch_bc_.end());
+                    }
+                    scratch_decode_ = std::move(vol);
+                    upload_ptr = scratch_decode_.data();
+                    pitch = bgra_pitch;
+                } else {
                     uint32_t bgra_pitch = 0;
-                    DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
-                    decoded = std::move(bgra);
+                    DecompressBcToBgra8(fi.host, d.width, d.height, scratch_decode_.data(), scratch_bc_, bgra_pitch);
+                    upload_ptr = scratch_bc_.data();
                     pitch = bgra_pitch;
                 }
-                [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
-                       mipmapLevel:0
-                             slice:face
-                         withBytes:decoded.data()
-                       bytesPerRow:pitch
-                     bytesPerImage:size_t(pitch) * d.height];
-            }
-            entry = {tex, d.format, d.width, d.height, epoch};
-            return tex;
-        }
-
-        std::vector<uint8_t> decoded;
-        uint32_t pitch = 0;
-        DecodeLevel(d, 0, 0, guest, pal, decoded, pitch);
-        if (decoded.empty() || !pitch) return nil;
-        if (is_bc) {
-            if (d.depth > 1) {
-                const uint32_t bh = std::max(1u, (d.height + 3) / 4);
-                const size_t slice_in = size_t(pitch) * bh;
-                std::vector<uint8_t> vol;
-                uint32_t bgra_pitch = d.width * 4;
-                vol.reserve(size_t(bgra_pitch) * d.height * d.depth);
-                for (uint32_t z = 0; z < d.depth; ++z) {
-                    std::vector<uint8_t> slice_bgra;
-                    DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data() + z * slice_in, slice_bgra, bgra_pitch);
-                    vol.insert(vol.end(), slice_bgra.begin(), slice_bgra.end());
-                }
-                decoded = std::move(vol);
-                pitch = bgra_pitch;
-            } else {
-                std::vector<uint8_t> bgra;
-                uint32_t bgra_pitch = 0;
-                DecompressBcToBgra8(fi.host, d.width, d.height, decoded.data(), bgra, bgra_pitch);
-                decoded = std::move(bgra);
-                pitch = bgra_pitch;
-            }
-        } else if (d.format == 0x24 || d.format == 0x25) {
-            // Guard against uninitialized YUY2/UYVY pixels (all-0x00 -> bright green, all-0xFF -> bright pink/purple)
-            // before or between Bink frames. Valid studio-range BT.601 black is 0x80108010, never 0x00000000 or 0xFFFFFFFF.
-            const uint32_t total = d.pitch * d.height;
-            if (total >= 64) {
-                uint32_t dw0 = 0, dw1 = 0, dw2 = 0, dw3 = 0;
-                std::memcpy(&dw0, guest + 0, 4);
-                std::memcpy(&dw1, guest + ((total / 3) & ~3u), 4);
-                std::memcpy(&dw2, guest + ((total / 2) & ~3u), 4);
-                std::memcpy(&dw3, guest + (((total * 2) / 3) & ~3u), 4);
-                static std::atomic<int> yuv_logged{0};
-                if (yuv_logged.fetch_add(1, std::memory_order_relaxed) < 12) {
-                    LOGR("metal: yuv tex fmt=%02X %ux%u pitch=%u dw=%08X,%08X,%08X,%08X",
-                         d.format, d.width, d.height, d.pitch, dw0, dw1, dw2, dw3);
-                }
-                const bool uniform_fill = (dw0 == dw1 && dw1 == dw2 && dw2 == dw3) &&
-                    (dw0 == 0u || dw0 == 0xFFFFFFFFu || (dw0 & 0xFFFFu) == (dw0 >> 16));
-                if (uniform_fill) {
-                    for (size_t i = 0; i + 3 < decoded.size(); i += 4) {
-                        decoded[i + 0] = 0;
-                        decoded[i + 1] = 0;
-                        decoded[i + 2] = 0;
-                        decoded[i + 3] = 255;
-                    }
-                } else {
-                    for (uint32_t y = 0; y < d.height; ++y) {
-                        const uint8_t* row = guest + size_t(y) * d.pitch;
-                        for (uint32_t x = 0; x + 1 < d.width; x += 2) {
-                            uint32_t pair = 0;
-                            std::memcpy(&pair, row + size_t(x) * 2, 4);
-                            if (pair == 0u || pair == 0xFFFFFFFFu) {
-                                uint8_t* o = &decoded[(size_t(y) * d.width + x) * 4];
-                                o[0] = o[1] = o[2] = 0; o[3] = 255;
-                                o[4] = o[5] = o[6] = 0; o[7] = 255;
+            } else if (d.format == 0x24 || d.format == 0x25) {
+                // Guard against uninitialized YUY2/UYVY pixels (all-0x00 -> bright green, all-0xFF -> bright pink/purple)
+                // before or between Bink frames. Valid studio-range BT.601 black is 0x80108010, never 0x00000000 or 0xFFFFFFFF.
+                const uint32_t yuv_total = d.pitch * d.height;
+                if (yuv_total >= 64) {
+                    uint32_t dw0 = 0, dw1 = 0, dw2 = 0, dw3 = 0;
+                    std::memcpy(&dw0, guest + 0, 4);
+                    std::memcpy(&dw1, guest + ((yuv_total / 3) & ~3u), 4);
+                    std::memcpy(&dw2, guest + ((yuv_total / 2) & ~3u), 4);
+                    std::memcpy(&dw3, guest + (((yuv_total * 2) / 3) & ~3u), 4);
+                    const bool uniform_fill = (dw0 == dw1 && dw1 == dw2 && dw2 == dw3) &&
+                        (dw0 == 0u || dw0 == 0xFFFFFFFFu || (dw0 & 0xFFFFu) == (dw0 >> 16));
+                    if (uniform_fill) {
+                        for (size_t i = 0; i + 3 < scratch_decode_.size(); i += 4) {
+                            scratch_decode_[i + 0] = 0;
+                            scratch_decode_[i + 1] = 0;
+                            scratch_decode_[i + 2] = 0;
+                            scratch_decode_[i + 3] = 255;
+                        }
+                    } else {
+                        for (uint32_t y = 0; y < d.height; ++y) {
+                            const uint8_t* row = guest + size_t(y) * d.pitch;
+                            for (uint32_t x = 0; x + 1 < d.width; x += 2) {
+                                uint32_t pair = 0;
+                                std::memcpy(&pair, row + size_t(x) * 2, 4);
+                                if (pair == 0u || pair == 0xFFFFFFFFu) {
+                                    uint8_t* o = &scratch_decode_[(size_t(y) * d.width + x) * 4];
+                                    o[0] = o[1] = o[2] = 0; o[3] = 255;
+                                    o[4] = o[5] = o[6] = 0; o[7] = 255;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        id<MTLTexture> tex = nil;
-        if (d.depth > 1) {
-            MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
-            td.textureType = MTLTextureType3D;
-            td.pixelFormat = mtl_fmt;
-            td.width = d.width;
-            td.height = d.height;
-            td.depth = d.depth;
-            td.mipmapLevelCount = 1;
-            tex = [device_ newTextureWithDescriptor:td];
-            if (!tex) return nil;
-            [tex replaceRegion:MTLRegionMake3D(0, 0, 0, d.width, d.height, d.depth)
-                   mipmapLevel:0
-                         slice:0
-                     withBytes:decoded.data()
-                   bytesPerRow:pitch
-                 bytesPerImage:size_t(pitch) * d.height];
-        } else {
-            MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtl_fmt
-                                                                                          width:d.width
-                                                                                         height:d.height
-                                                                                      mipmapped:NO];
-            tex = [device_ newTextureWithDescriptor:td];
-            if (!tex) return nil;
-            [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
-                   mipmapLevel:0
-                     withBytes:decoded.data()
-                   bytesPerRow:pitch];
+            id<MTLTexture> tex = can_reuse ? entry.tex : nil;
+            if (d.depth > 1) {
+                if (!tex) {
+                    MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+                    td.textureType = MTLTextureType3D;
+                    td.pixelFormat = mtl_fmt;
+                    td.width = d.width;
+                    td.height = d.height;
+                    td.depth = d.depth;
+                    td.mipmapLevelCount = 1;
+                    tex = [device_ newTextureWithDescriptor:td];
+                    if (!tex) return nil;
+                }
+                [tex replaceRegion:MTLRegionMake3D(0, 0, 0, d.width, d.height, d.depth)
+                       mipmapLevel:0
+                             slice:0
+                         withBytes:upload_ptr
+                       bytesPerRow:pitch
+                     bytesPerImage:size_t(pitch) * d.height];
+            } else {
+                if (!tex) {
+                    MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:mtl_fmt
+                                                                                                  width:d.width
+                                                                                                 height:d.height
+                                                                                              mipmapped:NO];
+                    tex = [device_ newTextureWithDescriptor:td];
+                    if (!tex) return nil;
+                }
+                [tex replaceRegion:MTLRegionMake2D(0, 0, d.width, d.height)
+                       mipmapLevel:0
+                         withBytes:upload_ptr
+                       bytesPerRow:pitch];
+            }
+            entry = {tex, d.format, d.width, d.height, d.depth, epoch, pal_hash, frame_id_, frame_id_};
+            return tex;
         }
-        entry = {tex, d.format, d.width, d.height, epoch};
-        return tex;
     }
 
     bool EnsureEncoderFor(uint32_t rt_va, uint32_t zs_va, uint32_t w, uint32_t h) {
@@ -1845,6 +1880,7 @@ private:
         active_color_tex_ = ct.tex;
         active_depth_tex_ = dt.tex;
         active_ct_ = &ct;
+        ct.drawn_epoch = DirtyEpoch(rt_va);
         ct.pending_clear = false;
         dt.pending_clear = false;
         ResetEncoderState();
@@ -1899,6 +1935,9 @@ private:
     std::vector<MetalVertex> scratch_verts_;
     std::vector<uint16_t> scratch_idx16_;
     std::vector<uint32_t> scratch_idx32_;
+    std::vector<uint8_t> scratch_decode_;
+    std::vector<uint8_t> scratch_bc_;
+    uint64_t frame_id_ = 1;
 
     id<MTLRenderPipelineState> bound_pso_ = nil;
     id<MTLDepthStencilState> bound_dss_ = nil;

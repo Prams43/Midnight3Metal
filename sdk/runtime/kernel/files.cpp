@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "gpu/render_profile.h"
@@ -40,6 +41,19 @@ std::string Normalize(std::string p) {
     return out;
 }
 
+// Per-directory case-insensitive filename cache so case-sensitive filesystems (iOS APFS)
+// never stall song-switching or asset streaming with repeated directory scans.
+std::mutex g_dir_cache_lock;
+std::unordered_map<std::string, std::unordered_map<std::string, std::string>> g_dir_cache;
+
+void InvalidateDirCache(const fs::path& p) {
+    std::lock_guard<std::mutex> lock(g_dir_cache_lock);
+    const std::string key = p.string();
+    g_dir_cache.erase(key);
+    const std::string parent = p.parent_path().string();
+    if (!parent.empty()) g_dir_cache.erase(parent);
+}
+
 // host lookup that ignores case on file systems that do not
 fs::path MatchCase(const fs::path& dir, const std::vector<std::string>& parts) {
     fs::path cur = dir;
@@ -49,22 +63,26 @@ fs::path MatchCase(const fs::path& dir, const std::vector<std::string>& parts) {
             cur = cur.parent_path();
             continue;
         }
-        fs::path direct = cur / part;
-        std::error_code ec;
-        if (fs::exists(direct, ec)) {
-            cur = direct;
-            continue;
-        }
-        bool found = false;
-        std::string want = Upper(part);
-        for (auto& e : fs::directory_iterator(cur, ec)) {
-            if (Upper(e.path().filename().string()) == want) {
-                cur = e.path();
-                found = true;
-                break;
+        const std::string dir_key = cur.string();
+        const std::string want = Upper(part);
+        {
+            std::lock_guard<std::mutex> lock(g_dir_cache_lock);
+            auto dit = g_dir_cache.find(dir_key);
+            if (dit == g_dir_cache.end()) {
+                std::unordered_map<std::string, std::string> map;
+                std::error_code ec;
+                for (auto& e : fs::directory_iterator(cur, ec)) {
+                    std::string fn = e.path().filename().string();
+                    map[Upper(fn)] = std::move(fn);
+                }
+                dit = g_dir_cache.emplace(dir_key, std::move(map)).first;
+            }
+            if (auto fit = dit->second.find(want); fit != dit->second.end()) {
+                cur /= fit->second;
+                continue;
             }
         }
-        if (!found) cur = direct;
+        cur /= part;
     }
     return cur;
 }
@@ -75,6 +93,7 @@ struct File : Object {
     FILE* fp = nullptr;
     const Disc::Entry* entry = nullptr;  // on the disc image instead of a host path
     bool dir = false;
+    bool written = false;
     uint64_t pos = 0;
     std::vector<fs::directory_entry> entries;
     std::vector<const Disc::Entry*> disc_entries;
@@ -88,6 +107,7 @@ struct File : Object {
         if (delete_on_close) {
             std::error_code ec;
             fs::remove(host, ec);
+            InvalidateDirCache(host);
         }
     }
 };
@@ -243,27 +263,33 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
         if (auto f = FileFromHandle(root_handle)) p = Normalize(f->xbox + "\\" + p);
     }
     if (p.size() >= 2 && p[1] == ':') p = "\\??\\" + p;
-    std::lock_guard<std::mutex> lock(g_links_lock);
-    for (int depth = 0; depth < 8; depth++) {
-        std::string up = Upper(p);
-        bool changed = false;
-        for (auto& [k, v] : g_links) {
-            if (up.compare(0, k.size(), k) == 0 && (up.size() == k.size() || up[k.size()] == '\\')) {
-                p = v + p.substr(k.size());
-                changed = true;
-                break;
+    std::string best_key;
+    fs::path best_dir;
+    {
+        std::lock_guard<std::mutex> lock(g_links_lock);
+        for (int depth = 0; depth < 8; depth++) {
+            std::string up = Upper(p);
+            bool changed = false;
+            for (auto& [k, v] : g_links) {
+                if (up.compare(0, k.size(), k) == 0 && (up.size() == k.size() || up[k.size()] == '\\')) {
+                    p = v + p.substr(k.size());
+                    changed = true;
+                    break;
+                }
             }
+            if (!changed) break;
         }
-        if (!changed) break;
+        std::string up = Upper(p);
+        for (auto& e : g_devices)
+            if (up.compare(0, e.first.size(), e.first) == 0 && (up.size() == e.first.size() || up[e.first.size()] == '\\'))
+                if (best_key.empty() || e.first.size() > best_key.size()) {
+                    best_key = e.first;
+                    best_dir = e.second;
+                }
     }
-    std::string up = Upper(p);
-    const std::pair<const std::string, fs::path>* best = nullptr;
-    for (auto& e : g_devices)
-        if (up.compare(0, e.first.size(), e.first) == 0 && (up.size() == e.first.size() || up[e.first.size()] == '\\'))
-            if (!best || e.first.size() > best->first.size()) best = &e;
-    if (!best) return {};
+    if (best_key.empty()) return {};
     std::vector<std::string> parts;
-    std::string rest = p.substr(best->first.size());
+    std::string rest = p.substr(best_key.size());
     size_t s = 0;
     while (s < rest.size()) {
         size_t e = rest.find('\\', s);
@@ -274,9 +300,9 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
     // no Xbox name holds ':', and fs::path would take "D:" as a host drive
     for (auto& part : parts)
         if (part.find(':') != std::string::npos) return {};
-    if (best->first == kCdRom)
+    if (best_key == kCdRom)
         if (const Disc* disc = MountedDisc()) return {{}, true, disc->Find(parts)};
-    return {MatchCase(best->second, parts).string()};
+    return {MatchCase(best_dir, parts).string()};
 }
 
 // the disc image is read only: nothing on it is created, replaced or written
@@ -349,6 +375,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
                 return kObjectNameNotFound;
             }
             fs::create_directories(host, ec);
+            InvalidateDirCache(host);
             info = 2;
         } else if (disposition == 2) {
             IoStatus(iosb, kObjectNameCollision, 4);
@@ -416,6 +443,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
         IoStatus(iosb, kAccessDenied, 0);
         return kAccessDenied;
     }
+    if (info == 2) InvalidateDirCache(host);
     auto f = std::make_shared<File>();
     f->host = host;
     f->xbox = Normalize(name);
@@ -545,6 +573,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
+    if (write && n) f->written = true;
     if (!write && !pages && n) ReplaceMotionBlurTune(*f, pos, buf, n);
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
@@ -563,7 +592,7 @@ KERNEL_EXPORT(211, NtQueryInformationFile, 5) {
     if (!f) return kInvalidHandle;
     std::error_code ec;
     uint64_t size = f->dir ? 0 : f->entry ? f->entry->size : fs::file_size(f->host, ec);
-    if (f->fp) {
+    if (f->fp && f->written) {
         std::fflush(f->fp);
         size = fs::file_size(f->host, ec);
     }
@@ -632,6 +661,8 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
             if (f->fp) std::fflush(f->fp);
             fs::rename(f->host, host, ec);
             if (ec) return kAccessDenied;
+            InvalidateDirCache(f->host);
+            InvalidateDirCache(host);
             f->host = host;
             break;
         }
@@ -772,6 +803,7 @@ KERNEL_EXPORT(195, NtDeleteFile, 1) {
     std::string host = ResolvePath(ReadAnsiString(R32(a[0] + 4)), R32(a[0]));
     std::error_code ec;
     if (host.empty() || !fs::remove(host, ec)) return kObjectNameNotFound;
+    InvalidateDirCache(host);
     return kSuccess;
 }
 

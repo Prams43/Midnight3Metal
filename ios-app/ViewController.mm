@@ -1,6 +1,5 @@
 #import "ViewController.h"
 #import "app/ios_touch_controls.h"
-#import "MC3DebugOverlay.h"
 #include "app/app.h"
 #include "audio/audio.h"
 #include "core/input.h"
@@ -87,20 +86,10 @@ static void InstallCrashHandler() {
 + (Class)layerClass { return [CAMetalLayer class]; }
 @end
 
-// Bridge: redirect logx::Write output to the on-screen debug overlay.
-// Called from a C-linkage shim installed at app startup.
-static void OverlayLogLine(const char* line) {
-    NSString* s = [NSString stringWithUTF8String:line ?: ""];
-    // Trim trailing newline for display
-    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    if (s.length > 0) [MC3DebugOverlay log:s];
-}
-
 @interface ViewController ()
 @property (strong, nonatomic) UIView* touchControlsOverlay;
 @property (strong, nonatomic) CADisplayLink* displayLink;
 @property (nonatomic) double startTime;
-@property (strong, nonatomic) MC3DebugOverlay* debugOverlay;
 @end
 
 @implementation ViewController {
@@ -155,21 +144,16 @@ static void OverlayLogLine(const char* line) {
             aliasOk = (*pWc == 0x12345678u);
             mem::FreeContiguous(va);
         }
-        NSString* memMsg = [NSString stringWithFormat:@"[MEM] base=%p alias=%s",
-                            static_cast<void*>(base), aliasOk ? "PASS" : "FAIL"];
-        [MC3DebugOverlay log:memMsg];
-        LOGI("%s", [memMsg UTF8String]);
+        LOGI("[MEM] base=%p alias=%s", static_cast<void*>(base), aliasOk ? "PASS" : "FAIL");
     } else {
-        [MC3DebugOverlay log:@"[MEM] Init FAILED"];
         LOGE("MC3 iOS Host: mem::Init failed");
     }
 
-    // Initialize Apple Audio Queue output (silent callback to verify audio thread pulls buffers)
+    // Initialize Apple Audio Queue output (silent callback until dsound mixer swaps in)
     audio::StartOutput([](float* out, uint32_t frames) {
         std::memset(out, 0, static_cast<size_t>(frames) * 2 * sizeof(float));
         g_audioFrames.fetch_add(frames, std::memory_order_relaxed);
     });
-    [MC3DebugOverlay log:@"[AUDIO] AudioQueue started"];
 
     // Initialize Metal layer first so d3d8's CreateBackend() can use it if kernel::Boot() succeeds.
     // The view's own layer IS the CAMetalLayer (MetalView overrides +layerClass).
@@ -219,11 +203,10 @@ static void OverlayLogLine(const char* line) {
             if (app::kGame.init) app::kGame.init();
             bool booted = kernel::Boot(std::move(xbeBytes), "default.xbe", gameDir, dataDir);
             _gameBooted = booted ? YES : NO;
-            [MC3DebugOverlay log:[NSString stringWithFormat:@"[BOOT] default.xbe -> %s (ep=0x%08X)",
-                                  booted ? "OK" : "FAILED", X86EntryPoint]];
+            LOGI("[BOOT] default.xbe -> %s (ep=0x%08X)", booted ? "OK" : "FAILED", X86EntryPoint);
         }
     } else {
-        [MC3DebugOverlay log:@"[BOOT] No default.xbe (stub mode, showing test triangle)"];
+        LOGI("[BOOT] No default.xbe (stub mode, showing test triangle)");
     }
 
     // Stub mode only: when the real game is not booted, create a standalone MetalBackend for the test triangle.
@@ -233,10 +216,8 @@ static void OverlayLogLine(const char* line) {
         if (!_gpuBackend || !_gpuBackend->Init(640, 480)) {
             _gpuBackend.reset();
             LOGE("MC3 iOS Host: Failed to initialize gpu::Backend (Metal)");
-            [MC3DebugOverlay log:@"[GPU] MetalBackend FAILED"];
         } else {
             LOGI("MC3 iOS Host: gpu::Backend (Metal) initialized (stub mode)");
-            [MC3DebugOverlay log:@"[GPU] MetalBackend ready (640x480)"];
 
             // Build a minimal pretransformed (XYZRHW | DIFFUSE) triangle in guest memory
             if (mem::Base()) {
@@ -271,24 +252,16 @@ static void OverlayLogLine(const char* line) {
         LOGE("MC3 iOS Host: Failed to create touch controls overlay");
     }
 
-    // Add debug overlay on top of everything (Windows devs: no Mac/Xcode needed)
-    self.debugOverlay = [MC3DebugOverlay sharedOverlay];
-    self.debugOverlay.frame = self.view.bounds;
-    self.debugOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:self.debugOverlay];
-    [MC3DebugOverlay log:@"[MC3] Debug overlay ready. Tap top-left to hide."];
-
-    // Set up game loop using CADisplayLink (synced to display refresh rate)
-    self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(gameLoopTick:)];
-    [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-
-    LOGI("MC3 iOS Host: Display link game loop started");
-    [MC3DebugOverlay log:@"[MC3] App started. Metal + Input + Loop ready."];
+    // Only run CADisplayLink in stub mode (when real game is booted, game threads own rendering)
+    if (!_gameBooted) {
+        self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(gameLoopTick:)];
+        [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        LOGI("MC3 iOS Host: Stub display link started");
+    }
 }
 
 - (void)gameLoopTick:(CADisplayLink*)displayLink {
-    double currentTime = CACurrentMediaTime() - self.startTime;
-
+    (void)displayLink;
     // Render test triangle only in stub mode (when real game is not booted)
     if (!_gameBooted && _gpuBackend) {
         gpu::State clearState;
@@ -299,35 +272,6 @@ static void OverlayLogLine(const char* line) {
         gpu::Surface front{};
         _gpuBackend->Present(front);
     }
-
-    // Log once per second: game loop heartbeat + input state
-    static int tickCount = 0;
-    tickCount++;
-    if (tickCount == 60) {
-        LOGD("MC3 iOS Host: Game loop active (60 ticks, time=%.2f)", currentTime);
-
-        // Poll port 0 to verify touch overlay → input routing
-        input::Pad pad = input::Poll(0);
-        if (pad.connected) {
-            NSString* padStr = [NSString stringWithFormat:
-                @"[PAD] btn=%04X A=%d B=%d X=%d Y=%d L=%d R=%d lx=%d ly=%d",
-                pad.buttons,
-                pad.analog[0], pad.analog[1], pad.analog[2], pad.analog[3],
-                pad.analog[4], pad.analog[5],
-                (int)pad.lx, (int)pad.ly];
-            [MC3DebugOverlay log:padStr];
-            LOGI("%s", [padStr UTF8String]);
-        }
-
-        // Show uptime + audio frame count on overlay every second
-        const uint64_t audioFrames = g_audioFrames.load(std::memory_order_relaxed);
-        [MC3DebugOverlay log:[NSString stringWithFormat:@"[LOOP] t=%.1fs audio=%llu",
-                              currentTime, static_cast<unsigned long long>(audioFrames)]];
-
-        tickCount = 0;
-    }
-
-    // Future: Call game->Tick(displayLink.duration) here
 }
 
 - (void)viewDidLayoutSubviews {
