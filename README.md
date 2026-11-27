@@ -1,4 +1,4 @@
-# Midnight Club 3: DUB Edition Remix — iOS Static Recompilation Port
+# Midnight Club 3: DUB Edition Remix - iOS Static Recompilation Port
 
 An experimental **iOS (ARM64 / Metal)** port of the original Xbox **Midnight Club 3: DUB Edition Remix** static recompilation project (`mc3-ios-work`).
 
