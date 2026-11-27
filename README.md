@@ -67,13 +67,18 @@ Instead of running an x86 emulator or JIT, the original Xbox executable (`defaul
 
 ## Running on iOS
 
-1. **Build the `.ipa`** via Xcode on macOS or the GitHub Actions `ios-build.yml` workflow (requires your own `default.xbe` during static recompilation).
-2. **Sign & sideload** the resulting `.ipa` onto your iOS device (e.g., via Xcode, AltStore, or SideStore).
-3. **Copy your game data** into the app's `Documents/` folder via the iOS Files app (or Finder/iTunes File Sharing):
-   - Place `default.xbe` and the game asset folders from your own copy directly inside the app's `Documents/` directory.
-4. **Launch the app** in landscape orientation.
+No jailbreak and **no JIT** are required — everything runs natively as ARM64 code on Apple Metal.
+
+1. **Download the `.ipa`** from the [Releases](https://github.com/Prams43/Midnight3Metal/releases/latest) page (or build it yourself via Xcode / the `ios-build.yml` workflow).
+2. **Sideload & install** the `.ipa` onto your iPhone or iPad using **AltStore**, **SideStore**, **TrollStore**, **Sideloadly**, or **Xcode**.
+3. **Copy your own Xbox game files** into the app's folder:
+   - Open the iOS **Files** app → **On My iPhone** (or **On My iPad**) → **`MC3 Remix`** *(or use Finder / iTunes File Sharing on macOS/Windows)*.
+   - Copy **`default.xbe`** and all extracted game asset folders from your legally obtained original Xbox copy of *Midnight Club 3: DUB Edition Remix* directly into that folder.
+   - *(Note: The `.ipa` does **not** include any game data, textures, audio, or movies — you must provide your own copy.)*
+4. **Launch `MC3 Remix`** in landscape orientation:
    - Tap the top-left corner (`60×60` zone) to hide or show the on-screen debug log panel.
-   - Use the top bar buttons to switch steering style (`◀▶` / `◎`) or manually toggle between `DRIVE` and `MENU` touch layouts if needed.
+   - Touch controls automatically switch between **Driving** and **Menu / Garage** modes; use the top bar buttons to switch steering style (`◀▶` / `◎`) or manually toggle `MENU` / `DRIVE` at any time.
+   - Connect any Bluetooth / MFi / Xbox / PlayStation controller for native gamepad play.
 
 ---
 
