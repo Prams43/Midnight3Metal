@@ -934,6 +934,7 @@ HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2], R3
     HLE_STDCALL(IDirectSoundBuffer_##name, nargs) {         \
         Count("Buffer_" #name);                             \
         t_caller = R32(ctx.esp);                            \
+        hitch::AddDsBuf(t_caller);                          \
         std::lock_guard<std::recursive_mutex> lock(g_lock); \
         Voice* v = Find(a[0]);                              \
         return v ? buf_##name(*v, a) : 0x80004005u;         \

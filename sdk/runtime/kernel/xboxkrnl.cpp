@@ -245,6 +245,7 @@ KERNEL_EXPORT(103, KeGetCurrentIrql, 0) { return Irql(); }
 KERNEL_EXPORT(121, KeIsExecutingDpc, 0) { return 0; }
 
 KERNEL_EXPORT(125, KeQueryInterruptTime, 0) {
+    hitch::AddIrqRead();
     uint64_t t = InterruptTime();
     ctx.edx = uint32_t(t >> 32);
     return uint32_t(t);
@@ -264,6 +265,7 @@ KERNEL_EXPORT(228, NtSetSystemTime, 2) {
 constexpr uint64_t kPerfFrequency = 3375000;
 
 KERNEL_EXPORT(126, KeQueryPerformanceCounter, 0) {
+    hitch::AddQpcRead();
     using namespace std::chrono;
     static const auto start = steady_clock::now();
     uint64_t ns = uint64_t(duration_cast<nanoseconds>(steady_clock::now() - start).count());
@@ -278,8 +280,10 @@ KERNEL_EXPORT(127, KeQueryPerformanceFrequency, 0) {
 }
 
 KERNEL_EXPORT(151, KeStallExecutionProcessor, 1) {
+    const uint64_t t0 = hitch::NowUs();
     auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(a[0]);
     while (std::chrono::steady_clock::now() < until) std::this_thread::yield();
+    hitch::AddStall(hitch::NowUs() - t0, R32(ctx.esp));
     return 0;
 }
 
@@ -294,6 +298,7 @@ KERNEL_EXPORT(99, KeDelayExecutionThread, 3) {
     };
     SuspendPoint();
     if (interval == 0) {
+        hitch::AddYield(R32(ctx.esp));
         std::this_thread::yield();
         return kSuccess;
     }
@@ -920,6 +925,7 @@ KERNEL_EXPORT(140, KeResumeThread, 1) {
 KERNEL_EXPORT(92, KeAlertResumeThread, 1) { return kimpl_KeResumeThread(ctx, a); }
 
 KERNEL_EXPORT(238, NtYieldExecution, 0) {
+    hitch::AddYield(R32(ctx.esp));
     SuspendPoint();
     std::this_thread::yield();
     return kSuccess;

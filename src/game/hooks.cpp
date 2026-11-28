@@ -1,3 +1,4 @@
+#include "core/hitch_prof.h"
 #include "core/log.h"
 #include "cpu/x86_context.h"
 #include "cpu/x86_ops.h"
@@ -72,11 +73,13 @@ void Mc3Loaded() {
 }
 
 bool Mc3ReadApuCounterEax(X86Context& ctx, uint8_t*) {
+    hitch::AddApuRead();
     ctx.eax = ApuGlobalSampleCounter();
     return true;
 }
 
 bool Mc3ReadApuCounterEbx(X86Context& ctx, uint8_t*) {
+    hitch::AddApuRead();
     ctx.ebx = ApuGlobalSampleCounter();
     return true;
 }
