@@ -28,6 +28,7 @@ void Mc2ApplyDebugBootArgs();
 bool Mc2CityFirstDrawReady();
 namespace dsound {
 void LogActiveVoices(const char* tag);
+void LogDrivingSnapshot(const char* tag);
 }
 
 namespace {
@@ -331,11 +332,15 @@ void Mc3MainLoopPadProbe(X86Context& ctx, uint8_t* base) {
     // State 2 is active driving/racing; 0x4B2D48 is the scaled simulation dt (0 while paused).
     {
         static uint32_t zero_dt_ticks = 0;
+        static uint32_t drive_ticks = 0;
         const bool in_world = (ctx.eax == 2);
         const float sim_dt = (in_world && mem::IsCommitted(0x4B2D48)) ? X86_MEMF32(0x4B2D48) : 0.0f;
         if (in_world && sim_dt > 0.0f) {
             zero_dt_ticks = 0;
             input::SetUiMode(input::UiMode::Driving);
+            ++drive_ticks;
+            if (drive_ticks == 300) dsound::LogDrivingSnapshot("drive+5s");
+            else if (drive_ticks == 900) dsound::LogDrivingSnapshot("drive+15s");
         } else {
             if (!in_world || ++zero_dt_ticks >= 4) {
                 input::SetUiMode(input::UiMode::Menu);

@@ -221,6 +221,9 @@ uint32_t g_ds = 0;
 const bool g_trace = std::getenv("XBE_AUDIO_TRACE") != nullptr;
 std::mutex g_trace_lock;
 std::map<std::string_view, uint64_t> g_calls;
+std::atomic<uint32_t> g_buf_create{0}, g_buf_play{0}, g_buf_stop{0}, g_buf_stopex{0};
+std::atomic<uint32_t> g_buf_setdata{0}, g_buf_setvol{0}, g_buf_setpitch{0}, g_buf_setout{0};
+std::atomic<uint32_t> g_buf_set3d{0}, g_buf_use3d{0}, g_buf_setbins{0}, g_buf_setbinvol{0};
 FILE* g_dump = nullptr;
 uint32_t g_dumped = 0;  // frames
 
@@ -705,6 +708,7 @@ void Route(Voice& v, uint32_t out) {
 }
 
 uint32_t NewBuffer(uint32_t desc, uint32_t out, uint32_t creator) {
+    g_buf_create.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     uint32_t obj = mem::AllocSystem(0x40);
@@ -951,6 +955,7 @@ BUFFER(Release, 1) {
 }
 BUFFER(Unlock, 5) { return 0; }
 BUFFER(SetBufferData, 3) {
+    g_buf_setdata.fetch_add(1, std::memory_order_relaxed);
     if (a[1] == v.data && a[2] == v.bytes) return 0;
     // the library frees its own memory, and makes it again for a size with no data
     if (v.owned && v.owned != a[1]) {
@@ -966,6 +971,7 @@ BUFFER(SetBufferData, 3) {
     return 0;
 }
 BUFFER(Play, 4) {
+    g_buf_play.fetch_add(1, std::memory_order_relaxed);
     if (!v.playing || v.eg_out >= 0) {  // a voice that plays on keeps its envelope where it is
         v.eg_at = 0;
         v.eg_out = -1;
@@ -977,6 +983,7 @@ BUFFER(Play, 4) {
     return 0;
 }
 BUFFER(Stop, 1) {
+    g_buf_stop.fetch_add(1, std::memory_order_relaxed);
     v.playing = false;
     v.eg_out = -1;
     return 0;
@@ -985,6 +992,7 @@ BUFFER(Stop, 1) {
 // DSBSTOPEX_RELEASEWAVEFORM the wave leaves its loop meanwhile: XACT stops its sounds this way. The voice still plays
 // until the release ends. Without a release, or with DSBSTOPEX_IMMEDIATE, it stops now. The time stamp is not kept.
 BUFFER(StopEx, 4) {
+    g_buf_stopex.fetch_add(1, std::memory_order_relaxed);
     if (!(a[3] & 1) || !v.playing || !v.data || !v.eg_mode || !v.eg[4]) {
         v.playing = false;
         v.eg_out = -1;
@@ -1053,6 +1061,7 @@ BUFFER(Lock, 8) {
     return 0;
 }
 BUFFER(SetVolume, 2) {
+    g_buf_setvol.fetch_add(1, std::memory_order_relaxed);
     v.volume = Db(int32_t(a[1]));
     v.vol_mb = int32_t(a[1]);
     return 0;
@@ -1065,6 +1074,7 @@ BUFFER(SetFrequency, 2) {
 }
 // pitch bend from 48 kHz in 1/4096 octave. XACT sets it on every buffer it plays.
 BUFFER(SetPitch, 2) {
+    g_buf_setpitch.fetch_add(1, std::memory_order_relaxed);
     v.rate_calls++;
     v.rate_from = t_caller;
     v.hz = RateOf(int32_t(a[1]));
@@ -1082,10 +1092,12 @@ BUFFER(SetEG, 2) {
 BUFFER(SetLFO, 2) { return 0; }  // the mixer has no LFOs
 // (this, DS3DVOICEDATA): 3D the title worked out with the 3D calculator, in place of the library's own
 BUFFER(Set3DVoiceData, 2) {
+    g_buf_set3d.fetch_add(1, std::memory_order_relaxed);
     if (a[1]) Set3D(v, a[1]);
     return 0;
 }
 BUFFER(Use3DVoiceData, 2) {
+    g_buf_use3d.fetch_add(1, std::memory_order_relaxed);
     v.use_d3 = a[1] != 0;
     return 0;
 }
@@ -1096,10 +1108,12 @@ BUFFER(SetHeadroom, 2) {
     return 0;
 }
 BUFFER(SetMixBinVolumes, 2) {
+    g_buf_setbinvol.fetch_add(1, std::memory_order_relaxed);
     SetBinVolumes(v, a[1]);
     return 0;
 }
 BUFFER(SetMixBins, 2) {
+    g_buf_setbins.fetch_add(1, std::memory_order_relaxed);
     SetBins(v, a[1]);
     return 0;
 }
@@ -1132,6 +1146,7 @@ BUFFER(SetRolloffCurve, 4) {
     return 0;
 }
 BUFFER(SetOutputBuffer, 2) {
+    g_buf_setout.fetch_add(1, std::memory_order_relaxed);
     Route(v, a[1]);
     return 0;
 }
@@ -1432,6 +1447,53 @@ void LogActiveVoices(const char* tag) {
                  v.stream ? "stream" : "loopbuf", v.obj, v.creator, v.channels, v.rate, v.vol_mb, gain,
                  v.packets.size(), int(v.active), int(v.paused), int(v.looping), v.output);
         }
+    }
+}
+
+void LogDrivingSnapshot(const char* tag) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    uint32_t bufs = 0, playing = 0, looping = 0, submix = 0, synced = 0, paused = 0, nodata = 0;
+    uint32_t streams = 0, s_active = 0, s_fed = 0, s_flushed = 0;
+    for (auto& [obj, v] : g_voices) {
+        if (v.stream) {
+            ++streams;
+            if (v.active) ++s_active;
+            if (!v.packets.empty()) ++s_fed;
+            if (v.flushed_env) ++s_flushed;
+        } else {
+            ++bufs;
+            if (v.playing) ++playing;
+            if (v.playing && v.looping) ++looping;
+            if (v.flags & 0x82000) ++submix;
+            if (v.sync) ++synced;
+            if (v.paused) ++paused;
+            if (v.playing && !v.data) ++nodata;
+        }
+    }
+    LOGR("dsound: [%s] bufs=%u(play=%u loop=%u sub=%u sync=%u pause=%u nodata=%u) streams=%u(act=%u fed=%u flenv=%u) calls(cr=%u pl=%u st=%u stx=%u dat=%u vol=%u pit=%u out=%u d3=%u u3=%u bn=%u bv=%u)",
+         tag ? tag : "?", bufs, playing, looping, submix, synced, paused, nodata,
+         streams, s_active, s_fed, s_flushed,
+         g_buf_create.load(std::memory_order_relaxed), g_buf_play.load(std::memory_order_relaxed),
+         g_buf_stop.load(std::memory_order_relaxed), g_buf_stopex.load(std::memory_order_relaxed),
+         g_buf_setdata.load(std::memory_order_relaxed), g_buf_setvol.load(std::memory_order_relaxed),
+         g_buf_setpitch.load(std::memory_order_relaxed), g_buf_setout.load(std::memory_order_relaxed),
+         g_buf_set3d.load(std::memory_order_relaxed), g_buf_use3d.load(std::memory_order_relaxed),
+         g_buf_setbins.load(std::memory_order_relaxed), g_buf_setbinvol.load(std::memory_order_relaxed));
+    int shown = 0;
+    for (auto& [obj, v] : g_voices) {
+        if (v.stream) continue;
+        if (!v.playing && !(v.flags & 0x82000) && shown >= 8) continue;
+        if (shown++ >= 20) break;
+        float g[2][2];
+        Levels(v, g);
+        const float gain = std::max({g[0][0], g[0][1], g[1][0], g[1][1]});
+        std::string bins;
+        for (uint32_t s = 0; s < v.nbins; ++s)
+            bins += " " + std::to_string(v.bin[s]) + ":" + std::to_string(v.bin_mb[v.bin[s]]);
+        LOGR("dsound:   buf %08X fl=%X tag=%X %uch %uHz->%.0f play=%d lp=%d sy=%d pa=%d dat=%08X len=%u vol=%d hd=%d sub=%d out=%08X u3=%d d3=(%d,%d,%d,%d) eg=%u/%u gain=%.4f bins=%s",
+             v.obj, v.flags, v.tag, v.channels, v.rate, Rate(v), int(v.playing), int(v.looping), int(v.sync), int(v.paused),
+             v.data, v.play_len, v.vol_mb, v.head_mb, v.sub_mb, v.output, int(v.use_d3),
+             v.d3[1], v.d3[2], v.d3[3], v.d3[9], v.eg_mode, v.eg[4], gain, bins.c_str());
     }
 }
 

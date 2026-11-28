@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -440,6 +441,14 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
             break;
         case 1:  // open
             if (!exists) {
+                const std::string up = Upper(name);
+                if (up.find(".XWB") != std::string::npos || up.find(".XSB") != std::string::npos ||
+                    up.find(".XAP") != std::string::npos || up.find("AUDIO") != std::string::npos) {
+                    static std::atomic<int> miss_aud{0};
+                    if (miss_aud.fetch_add(1, std::memory_order_relaxed) < 16) {
+                        LOGR("files: missing audio file %s (host=%s)", name.c_str(), host.c_str());
+                    }
+                }
                 LOG_FIRST(200, "missing %s", name.c_str());
                 IoStatus(iosb, kObjectNameNotFound, 5);
                 return kObjectNameNotFound;
@@ -510,6 +519,14 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     const std::string& host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::exists(host, ec)) {
+        const std::string up = Upper(name);
+        if (up.find(".XWB") != std::string::npos || up.find(".XSB") != std::string::npos ||
+            up.find(".XAP") != std::string::npos || up.find("AUDIO") != std::string::npos) {
+            static std::atomic<int> miss_aud2{0};
+            if (miss_aud2.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOGR("files: missing audio file (open) %s (host=%s)", name.c_str(), host.c_str());
+            }
+        }
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
         return host.empty() ? kObjectPathNotFound : kObjectNameNotFound;
