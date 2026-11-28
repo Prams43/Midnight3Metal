@@ -310,7 +310,7 @@ static BOOL HasValidXbeHeader(NSString* path) {
 
     UILabel* subLbl = [[UILabel alloc] initWithFrame:CGRectZero];
     subLbl.tag = 103;
-    subLbl.text = @"iOS Native Metal Port • Xbox XDK 5849";
+    subLbl.text = @"iOS Native Metal Port • v0.2 • by Prams43";
     subLbl.textColor = [UIColor colorWithRed:0.62 green:0.66 blue:0.74 alpha:1.0];
     subLbl.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightMedium];
     subLbl.adjustsFontSizeToFitWidth = YES;

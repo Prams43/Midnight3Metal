@@ -15,9 +15,15 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
+    <string>0.2</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
+    <key>CFBundleGetInfoString</key>
+    <string>Midnight3Metal 0.2 by Prams43</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Prams43. All rights reserved.</string>
+    <key>MC3DeveloperName</key>
+    <string>Prams43</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UIRequiredDeviceCapabilities</key>

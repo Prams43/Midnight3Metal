@@ -169,6 +169,7 @@ struct Voice {
     // stream
     uint32_t max_packets = 1, callback = 0, context = 0;
     std::deque<Packet> packets;
+    std::deque<Packet> aborted_packets;  // late packets submitted after envelope flush; drained with E_ABORT in DoWork/Flush/Release
     // levels
     float volume = 1, headroom = 1;
     uint8_t nbins = 0, bin[8] = {};
@@ -340,15 +341,18 @@ int32_t Bin3D(const Voice& v, uint32_t b) {
 float Envelope(const Voice& v) {
     float level = 1;
     if (v.eg_mode) {
-        uint64_t t = v.eg_at, delay = v.eg[0] * 512ull, attack = v.eg[1] * 512ull, hold = v.eg[2] * 512ull,
-                 decay = v.eg[3] * 512ull;
-        if (v.eg_mode >= 2) t += delay;   // DSEG_MODE_ATTACK has no delay
-        if (v.eg_mode >= 3) t += attack;  // DSEG_MODE_HOLD starts full scale
-        if (t < delay) level = 0;
-        else if ((t -= delay) < attack) level = float(t) / float(attack);
-        else if ((t -= attack) < hold) level = 1;
-        else if ((t -= hold) < decay) level = 1 - (1 - v.eg_sustain) * float(t) / float(decay);
-        else level = v.eg_sustain;
+        const bool release_only = (v.eg[0] == 0 && v.eg[1] == 0 && v.eg[2] == 0 && v.eg[3] == 0 && v.eg_sustain <= 0.0f);
+        if (!release_only) {
+            uint64_t t = v.eg_at, delay = v.eg[0] * 512ull, attack = v.eg[1] * 512ull, hold = v.eg[2] * 512ull,
+                     decay = v.eg[3] * 512ull;
+            if (v.eg_mode >= 2) t += delay;   // DSEG_MODE_ATTACK has no delay
+            if (v.eg_mode >= 3) t += attack;  // DSEG_MODE_HOLD starts full scale
+            if (t < delay) level = 0;
+            else if ((t -= delay) < attack) level = float(t) / float(attack);
+            else if ((t -= attack) < hold) level = 1;
+            else if ((t -= hold) < decay) level = 1 - (1 - v.eg_sustain) * float(t) / float(decay);
+            else level = v.eg_sustain;
+        }
     }
     if (v.eg_out >= 0) level = v.eg_from * std::max(0.0f, 1 - float(v.eg_out) / float(v.eg[4] * 512ull));
     return level;
@@ -372,9 +376,10 @@ void Levels(Voice& v, float g[2][2], int depth = 0) {
             if (speakers && (b == 3 || b > 9)) continue;  // sub and effect sends
             float x = Db(v.bin_mb[b]) * v.volume * v.headroom * (b == 2 ? 0.707f : 1.0f);
             if (v.use_d3) x *= Db(Bin3D(v, b));
-            // even bins are left, odd right, 2 is the centre
-            if (!speakers || b == 2 || !(b & 1)) g[c][0] = std::max(g[c][0], x);
-            if (!speakers || b == 2 || (b & 1)) g[c][1] = std::max(g[c][1], x);
+            // Sum distinct surround/crosstalk speaker bins (front + center + rear) into stereo downmix
+            // rather than taking max() of a single bin, which attenuated 3D submix car/NOS/crash SFX by ~6 dB.
+            if (!speakers || b == 2 || !(b & 1)) g[c][0] = std::min(1.0f, g[c][0] + x);
+            if (!speakers || b == 2 || (b & 1)) g[c][1] = std::min(1.0f, g[c][1] + x);
         }
     }
     // A voice with a submix feeds that buffer's bin, and the submix plays it through its own bins, volume and 3D. XACT
@@ -499,7 +504,7 @@ void Render(float* out, uint32_t frames) {
             float l = a * g[0][0] + b * g[1][0], rr = a * g[0][1] + b * g[1][1];
             out[i * 2] += l;
             out[i * 2 + 1] += rr;
-            if (g_trace) v.energy += l * l + rr * rr;
+            v.energy += l * l + rr * rr;
             v.pos += step;
         }
     }
@@ -705,6 +710,8 @@ void Route(Voice& v, uint32_t out) {
     if (!s || !(s->flags & 0x82000)) return;
     v.nbins = 0;
     v.sub_mb = int32_t(std::lround(-2000.0 * std::log10(double(std::max<uint32_t>(v.channels, 1)))));
+    // Voices routed into a 3D submix (engine/NOS/crash SFX) use unity send headroom unless SetHeadroom was explicitly called.
+    if (v.head_mb == 0) v.headroom = 1.0f;
 }
 
 uint32_t NewBuffer(uint32_t desc, uint32_t out, uint32_t creator) {
@@ -856,6 +863,12 @@ HLE_STDCALL(DirectSoundDoWork, 0) {
     std::vector<Done> done;
     {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
+        for (auto& [obj, v] : g_voices) {
+            if (v.stream && !v.aborted_packets.empty()) {
+                for (auto& pk : v.aborted_packets) Complete(v, pk, kFlushed);
+                v.aborted_packets.clear();
+            }
+        }
         done.assign(g_done.begin(), g_done.end());
         g_done.clear();
     }
@@ -1216,6 +1229,8 @@ HLE_STDCALL(IDirectSound_CreateSoundStream, 4) { return NewStream(a[1], a[2], R3
 static void FlushStream(Voice& v, bool async_cb = false) {
     for (auto& pk : v.packets) Complete(v, pk, kFlushed);
     v.packets.clear();
+    for (auto& pk : v.aborted_packets) Complete(v, pk, kFlushed);
+    v.aborted_packets.clear();
     v.pos = 0;
     if (!async_cb) {
         for (auto it = g_done.begin(); it != g_done.end();) {
@@ -1286,14 +1301,16 @@ STREAM(Process, 3) {
     uint32_t in = a[1];
     if (!in) return 0;
     Packet pk{R32(in), R32(in + 4), R32(in + 8), R32(in + 12), R32(in + 16)};
-    if (v.flushed_env) {
-        // Reject late in-flight packets after an envelope flush with E_ABORT so stopped
-        // XACT music tracks (menu/garage/previous race) cannot resurrect and overlap new tracks.
-        Complete(v, pk, kFlushed);
-        return 0;
-    }
     if (pk.completed_ptr) W32(pk.completed_ptr, 0);
     if (pk.status_ptr) W32(pk.status_ptr, kPacketPending);
+    if (v.flushed_env) {
+        // Keep status PENDING until DirectSoundDoWork / Flush / Release drains it with E_ABORT.
+        // Completing synchronously with E_ABORT inside Process() caused XACT's stream feeder
+        // (0x0040F757) to see the slot immediately free and synchronously software-decode ~84 WMA
+        // packets (~300-770 ms) on every song switch and race finish.
+        v.aborted_packets.push_back(pk);
+        return 0;
+    }
     v.packets.push_back(pk);
     v.active = true;
     v.ending = false;
@@ -1490,10 +1507,10 @@ void LogDrivingSnapshot(const char* tag) {
         std::string bins;
         for (uint32_t s = 0; s < v.nbins; ++s)
             bins += " " + std::to_string(v.bin[s]) + ":" + std::to_string(v.bin_mb[v.bin[s]]);
-        LOGR("dsound:   buf %08X fl=%X tag=%X %uch %uHz->%.0f play=%d lp=%d sy=%d pa=%d dat=%08X len=%u vol=%d hd=%d sub=%d out=%08X u3=%d d3=(%d,%d,%d,%d) eg=%u/%u gain=%.4f bins=%s",
+        LOGR("dsound:   buf %08X fl=%X tag=%X %uch %uHz->%.0f play=%d lp=%d sy=%d pa=%d dat=%08X len=%u vol=%d hd=%d sub=%d out=%08X u3=%d d3=(%d,%d,%d,%d) eg=%u/%u egs=%.2f env=%.2f gain=%.4f en=%.2f bins=%s",
              v.obj, v.flags, v.tag, v.channels, v.rate, Rate(v), int(v.playing), int(v.looping), int(v.sync), int(v.paused),
              v.data, v.play_len, v.vol_mb, v.head_mb, v.sub_mb, v.output, int(v.use_d3),
-             v.d3[1], v.d3[2], v.d3[3], v.d3[9], v.eg_mode, v.eg[4], gain, bins.c_str());
+             v.d3[1], v.d3[2], v.d3[3], v.d3[9], v.eg_mode, v.eg[4], v.eg_sustain, Envelope(v), gain, v.energy, bins.c_str());
     }
 }
 
